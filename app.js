@@ -3,7 +3,8 @@
 /* ---------- Telegram ---------- */
 const tg = window.Telegram && window.Telegram.WebApp;
 const inTelegram = !!(tg && tg.initData);
-const tgBack = inTelegram && tg.isVersionAtLeast && tg.isVersionAtLeast('6.1');
+const tgVersion = v => inTelegram && tg.isVersionAtLeast && tg.isVersionAtLeast(v);
+const tgBack = tgVersion('6.1');
 
 /* ---------- настройки ---------- */
 // Адрес серверной функции Supabase. Пусто — демо-режим, данные только на этом устройстве.
@@ -37,10 +38,14 @@ const ICON = {
   calendar: svg('<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/>'),
   clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
   pin: svg('<path d="M12 21s-7-6.1-7-11.5a7 7 0 0 1 14 0C19 14.9 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>'),
-  phone: svg('<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/>'),
   check: svg('<path d="m5 12 5 5L20 7"/>'),
   note: svg('<rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h8M8 12h8M8 16h5"/>'),
+  search: svg('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>'),
+  camera: svg('<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>'),
+  close: svg('<path d="M6 6l12 12M18 6 6 18"/>'),
 };
+// Иконка приложения: профиль плинтуса на тёмном
+const APP_ICON = '<svg viewBox="0 0 120 120" aria-hidden="true"><rect width="120" height="120" rx="27" fill="#111113"/><path d="M34 28 H52 V44 C52 52 62 52 62 60 C62 68 72 70 72 78 V86 H86 V92 H34 Z" fill="#0A84FF"/></svg>';
 
 /* ---------- утилиты ---------- */
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -56,6 +61,7 @@ const pad = n => String(n).padStart(2, '0');
 const toLocalInput = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 const monthKey = s => s.slice(0, 7);
 const currentMonth = () => monthKey(toLocalInput(new Date()));
+const todayKey = () => toLocalInput(new Date()).slice(0, 10);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const telHref = p => 'tel:' + String(p).replace(/[^\d+]/g, '');
 const lin = v => (v?.plinth || 0) + (v?.molding || 0);
@@ -103,6 +109,8 @@ function volumeShort(v, approx = true) {
 const STORE_KEY = remote ? 'delo.cache.v1' : 'delo.orders.v1';
 const NOTES_KEY = remote ? 'delo.notes.cache.v1' : 'delo.notes.v1';
 const QUEUE_KEY = 'delo.queue.v1';
+const PHOTO_KEY = 'delo.photo-urls.v1';
+const HOME_KEY = 'delo.home-hidden.v1';
 
 function readJSON(key) {
   try {
@@ -307,20 +315,125 @@ function groupByMonth(list) {
   return [...map];
 }
 
+/* ---------- фото ---------- */
+// В общем режиме фото лежат в закрытом хранилище, а ссылки на них временные — держим их в кэше.
+// В демо-режиме фото хранится прямо в заказе как data:-ссылка.
+let photoUrls = readJSON(PHOTO_KEY) || {};
+const uploading = {};
+
+const photoSrc = p => (p.startsWith('data:') ? p : photoUrls[p]?.exp > Date.now() ? photoUrls[p].url : '');
+const imgAttrs = p => {
+  if (p.startsWith('data:')) return `src="${p}"`;
+  const src = photoSrc(p);
+  return `data-path="${esc(p)}"${src ? ` src="${esc(src)}"` : ''}`;
+};
+
+function rememberUrl(path, url) {
+  if (!url) return;
+  photoUrls[path] = { url, exp: Date.now() + 6 * 864e5 };
+  writeJSON(PHOTO_KEY, photoUrls);
+}
+
+async function loadPhotoUrls(paths) {
+  const need = paths.filter(p => !photoSrc(p));
+  if (!need.length || !remote) return;
+  try {
+    const { urls } = await api({ action: 'sign', paths: need });
+    for (const [p, url] of Object.entries(urls)) rememberUrl(p, url);
+    for (const img of app.querySelectorAll('img[data-path]')) {
+      const src = photoSrc(img.dataset.path);
+      if (src && img.getAttribute('src') !== src) img.src = src;
+    }
+  } catch (e) {
+    syncError(e);
+  }
+}
+
+// Сжимаем на телефоне: фото с камеры весит 3–5 МБ, после сжатия — 200–400 КБ
+async function compress(file, max) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, fail) => {
+      const i = new Image();
+      i.onload = () => ok(i);
+      i.onerror = fail;
+      i.src = url;
+    });
+    const k = Math.min(1, max / Math.max(img.width, img.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.width * k);
+    canvas.height = Math.round(img.height * k);
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.8);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function addPhotos(id, files) {
+  uploading[id] = (uploading[id] || 0) + files.length;
+  rerenderOrder(id);
+  for (const file of files) {
+    try {
+      const data = await compress(file, remote ? 1600 : 800);
+      let path = data;
+      if (remote) {
+        const res = await api({ action: 'upload', photo: data.split(',')[1] });
+        path = res.path;
+        rememberUrl(path, res.url);
+      }
+      const o = findOrder(id);
+      if (o) {
+        o.photos = [...(o.photos || []), path];
+        saveOrders();
+        push({ action: 'save', order: o });
+      }
+    } catch {
+      toast('Не удалось загрузить фото');
+    }
+    uploading[id]--;
+    rerenderOrder(id);
+  }
+  haptic('success');
+}
+
+function rerenderOrder(id) {
+  const top = state.stack[state.stack.length - 1];
+  if (top?.type === 'order' && top.id === id) render();
+}
+
 /* ---------- навигация ---------- */
-const state = { tab: 'home', stack: [] };
+const now0 = new Date();
+const state = {
+  tab: 'home',
+  stack: [],
+  ordersView: 'list',
+  cal: { y: now0.getFullYear(), m: now0.getMonth() },
+  calDay: todayKey(),
+  historyQuery: '',
+};
 const app = document.getElementById('app');
 const tabbar = document.getElementById('tabbar');
+let homeStatus = null; // ответ Telegram: можно ли добавить иконку на экран
 
-function go(screen) { state.stack.push(screen); render(true); }
+function go(screen) {
+  state.stack.push(screen);
+  tick();
+  render(true, 'push');
+}
 function back() {
   const top = state.stack.pop();
   if (top?.type === 'note') closeNote(top.id);
+  render(true, 'pop');
+}
+function setTab(tab) {
+  if (state.tab !== tab) tick();
+  state.tab = tab;
+  state.stack = [];
   render(true);
 }
-function setTab(tab) { state.tab = tab; state.stack = []; render(true); }
 
-function render(scrollTop) {
+function render(scrollTop, anim) {
   const top = state.stack[state.stack.length - 1];
   app.innerHTML = top ? SCREENS[top.type](top) : TABS[state.tab]();
   document.body.classList.toggle('sub', !!top);
@@ -328,6 +441,13 @@ function render(scrollTop) {
   tabbar.innerHTML = renderTabbar();
   if (tgBack) top ? tg.BackButton.show() : tg.BackButton.hide();
   if (scrollTop) window.scrollTo(0, 0);
+  if (anim) {
+    app.classList.remove('push', 'pop');
+    void app.offsetWidth; // перезапуск анимации
+    app.classList.add(anim);
+  }
+  const o = top && ['order', 'photo'].includes(top.type) && findOrder(top.id);
+  if (o?.photos?.length) loadPhotoUrls(o.photos);
 }
 
 function openLink(url) {
@@ -337,6 +457,10 @@ function openLink(url) {
 
 function haptic(type) {
   try { tg?.HapticFeedback?.notificationOccurred(type); } catch { /* старый клиент */ }
+}
+
+function tick() {
+  try { tg?.HapticFeedback?.selectionChanged(); } catch { /* старый клиент */ }
 }
 
 function confirmAsk(text, cb) {
@@ -380,6 +504,14 @@ function splitPreview(finder, earned) {
     <div><span class="dot ivan"></span>Иван · ${Math.round(s.ivan * 100)}%<b>${money(e * s.ivan)}</b></div>
     <div><span class="dot klim"></span>Клим · ${Math.round(s.klim * 100)}%<b>${money(e * s.klim)}</b></div>
     <p>Заказ нашёл ${PEOPLE[finder] || PEOPLE.klim}, делим ${s.label}</p>`;
+}
+
+// Предупреждение, если на этот день уже что-то стоит
+function dateHint(date, selfId) {
+  if (!date) return '';
+  const same = plannedOrders().filter(o => o.id !== selfId && o.date.slice(0, 10) === date.slice(0, 10));
+  if (!same.length) return '';
+  return `${ICON.clock}<span>В этот день уже: ${same.map(o => `${o.date.slice(11, 16)} ${esc(o.address)}`).join('; ')}</span>`;
 }
 
 function orderRow(o) {
@@ -432,6 +564,7 @@ function renderHome() {
   const a = totals(all);
   const upcoming = plannedOrders();
   const [first, ...rest] = upcoming;
+  const offerHome = homeStatus === 'missed' && !readJSON(HOME_KEY);
 
   return `
     <header class="hero">
@@ -465,33 +598,91 @@ function renderHome() {
         <div><div class="caption">Всё время</div><div class="big">${num(lin(a))}<small>м</small></div></div>
       </div>
       <div class="card-foot">Плинтус и молдинг</div>
-    </button>`;
+    </button>
+
+    ${offerHome ? `
+      <div class="card promo">
+        <div class="promo-icon">${APP_ICON}</div>
+        <div class="promo-text"><b>Иконка на экран телефона</b><span>Открывать «Плинтус» одним касанием</span></div>
+        <button class="chip solid" data-action="add-home">Добавить</button>
+        <button class="promo-x" data-action="hide-home" aria-label="Скрыть">${ICON.close}</button>
+      </div>` : ''}`;
 }
 
 function renderOrders() {
+  const cal = state.ordersView === 'cal';
   const list = plannedOrders();
   return `
     <header class="hero row">
       <h1 class="large-title">Заказы</h1>
       <button class="round-btn" data-go="edit" aria-label="Новый заказ">${ICON.plus}</button>
     </header>
-    ${list.length
+    <div class="seg">
+      <button class="${cal ? '' : 'on'}" data-action="view" data-id="list">Список</button>
+      <button class="${cal ? 'on' : ''}" data-action="view" data-id="cal">Календарь</button>
+    </div>
+    ${cal ? renderCalendar() : list.length
       ? `<div class="list">${list.map(orderRow).join('')}</div>`
       : emptyState('Заказов пока нет', 'Нашли объект — добавьте его, чтобы не потерять адрес и детали.')}
-    <button class="btn primary" data-go="edit">${ICON.plus}Новый заказ</button>`;
+    ${cal ? '' : `<button class="btn primary" data-go="edit">${ICON.plus}Новый заказ</button>`}`;
+}
+
+function renderCalendar() {
+  const { y, m } = state.cal;
+  const offset = (new Date(y, m, 1).getDay() + 6) % 7; // неделя с понедельника
+  const days = new Date(y, m + 1, 0).getDate();
+  const today = todayKey();
+  const byDay = {};
+  for (const o of orders) (byDay[o.date.slice(0, 10)] ||= []).push(o);
+
+  const cells = [];
+  for (let i = 0; i < offset; i++) cells.push('<span></span>');
+  for (let d = 1; d <= days; d++) {
+    const key = `${y}-${pad(m + 1)}-${pad(d)}`;
+    const dots = (byDay[key] || []).slice(0, 3).map(o => `<i class="${o.status}"></i>`).join('');
+    const cls = [key === today && 'today', key === state.calDay && 'sel'].filter(Boolean).join(' ');
+    cells.push(`<button class="day ${cls}" data-action="cal-day" data-id="${key}"><span>${d}</span><b>${dots}</b></button>`);
+  }
+
+  const dayList = (byDay[state.calDay] || []).sort((a, b) => a.date.localeCompare(b.date));
+  const [, sm, sd] = state.calDay.split('-').map(Number);
+  return `
+    <div class="card cal">
+      <div class="cal-head">
+        <button class="cal-nav" data-action="cal-move" data-id="-1" aria-label="Предыдущий месяц">${ICON.back}</button>
+        <b>${MONTHS[m]} ${y}</b>
+        <button class="cal-nav" data-action="cal-move" data-id="1" aria-label="Следующий месяц">${ICON.chevron}</button>
+      </div>
+      <div class="cal-grid">
+        ${['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'].map(w => `<span class="wd">${w}</span>`).join('')}
+        ${cells.join('')}
+      </div>
+    </div>
+    <h2 class="section-title">${sd} ${MONTHS_GEN[sm - 1]}</h2>
+    ${dayList.length ? `<div class="list">${dayList.map(orderRow).join('')}</div>` : '<div class="empty"><p>В этот день заказов нет</p></div>'}
+    <button class="btn primary" data-go="edit" data-day="${state.calDay}">${ICON.plus}Заказ на ${sd} ${MONTHS_GEN[sm - 1]}</button>`;
+}
+
+function historyList() {
+  const q = state.historyQuery.trim().toLowerCase();
+  const list = doneOrders().filter(o => !q || `${o.address} ${o.client ?? ""} ${o.comment ?? ""}`.toLowerCase().includes(q));
+  const groups = groupByMonth(list);
+  if (!groups.length) {
+    return q ? emptyState('Ничего не нашлось', 'Попробуйте другой адрес или имя.') : emptyState('Пока пусто', 'Выполненные заказы появятся здесь.');
+  }
+  return groups.map(([key, items]) => `
+    <div class="section-head">
+      <h2 class="section-title">${monthName(key)}</h2>
+      <span>${money(totals(items).earned)}</span>
+    </div>
+    <div class="list">${items.map(orderRow).join('')}</div>`).join('');
 }
 
 function renderHistory() {
-  const groups = groupByMonth(doneOrders());
   return `
     <header class="hero"><h1 class="large-title">История</h1></header>
-    ${groups.length ? groups.map(([key, list]) => `
-      <div class="section-head">
-        <h2 class="section-title">${monthName(key)}</h2>
-        <span>${money(totals(list).earned)}</span>
-      </div>
-      <div class="list">${list.map(orderRow).join('')}</div>`).join('')
-      : emptyState('Пока пусто', 'Выполненные заказы появятся здесь.')}`;
+    <label class="search">${ICON.search}<input type="search" id="history-q" placeholder="Адрес, клиент, комментарий" value="${esc(state.historyQuery)}" autocomplete="off"></label>
+    <div id="history-list">${historyList()}</div>`;
 }
 
 function renderNotes() {
@@ -520,6 +711,18 @@ const TABS = { home: renderHome, orders: renderOrders, notes: renderNotes, histo
 /* ---------- экраны ---------- */
 function notFound() {
   return navBar('') + emptyState('Заказ не найден', 'Возможно, его удалили.');
+}
+
+function photoGrid(o) {
+  const photos = o.photos || [];
+  const busy = uploading[o.id] || 0;
+  return `
+    <h2 class="section-title">Фото</h2>
+    <div class="photos">
+      ${photos.map((p, i) => `<button class="thumb" data-go="photo" data-id="${o.id}" data-idx="${i}"><img ${imgAttrs(p)} alt="" loading="lazy"></button>`).join('')}
+      ${'<div class="thumb busy"><i></i></div>'.repeat(busy)}
+      <label class="thumb add">${ICON.camera}<span>Добавить</span><input type="file" accept="image/*" multiple data-photo-for="${o.id}"></label>
+    </div>`;
 }
 
 function renderOrder({ id }) {
@@ -564,23 +767,36 @@ function renderOrder({ id }) {
       </div>
       ${o.comment ? textBlock('Комментарий', o.comment) : ''}` : ''}
 
+    ${photoGrid(o)}
+
     ${!isDone ? `<button class="btn primary" data-go="complete" data-id="${o.id}">${ICON.check}Заказ выполнен</button>` : ''}
     <button class="btn plain danger" data-action="delete" data-id="${o.id}">Удалить заказ</button>`;
 }
 
-function defaultDate() {
+function renderPhoto({ id, idx }) {
+  const o = findOrder(id);
+  const p = o?.photos?.[idx];
+  if (!p) return notFound();
+  return `
+    ${navBar(`${Number(idx) + 1} из ${o.photos.length}`, `<button class="nav-link danger" data-action="photo-delete" data-id="${o.id}" data-idx="${idx}">Удалить</button>`)}
+    <div class="photo-full"><img ${imgAttrs(p)} alt=""></div>`;
+}
+
+function defaultDate(day) {
+  if (day) return `${day}T10:00`;
   const d = new Date();
   d.setDate(d.getDate() + 1);
   d.setHours(10, 0, 0, 0);
   return toLocalInput(d);
 }
 
-function renderEdit({ id }) {
+function renderEdit({ id, day }) {
   const o = id ? findOrder(id) : null;
   if (id && !o) return notFound();
   const isDone = o?.status === 'done';
   const vols = (isDone ? o.fact : o?.plan) || {};
   const finder = o?.finder || 'klim';
+  const date = o?.date || defaultDate(day);
 
   return `
     <form data-form="edit" data-id="${o ? o.id : ''}" autocomplete="off">
@@ -589,8 +805,9 @@ function renderEdit({ id }) {
       <h2 class="section-title">Объект</h2>
       <div class="list">
         ${field('Адрес', `<input name="address" required placeholder="ул. Ленина, 12, кв. 48" value="${esc(o?.address)}">`)}
-        ${field('Когда', `<input name="date" type="datetime-local" required value="${esc(o?.date || defaultDate())}">`)}
+        ${field('Когда', `<input name="date" type="datetime-local" required value="${esc(date)}">`)}
       </div>
+      <div class="hint" id="date-hint">${isDone ? '' : dateHint(date, o?.id)}</div>
 
       <h2 class="section-title">Клиент</h2>
       <div class="list">
@@ -728,6 +945,7 @@ function renderNote({ id }) {
 const SCREENS = {
   note: renderNote,
   order: renderOrder,
+  photo: renderPhoto,
   edit: renderEdit,
   complete: renderComplete,
   stats: renderStats,
@@ -776,8 +994,31 @@ function saveComplete(id, fd) {
   back();
 }
 
-function handleAction(action, id) {
+function handleAction(action, id, data) {
   if (action === 'back') return back();
+  if (action === 'view') {
+    state.ordersView = id;
+    tick();
+    return render();
+  }
+  if (action === 'cal-move') {
+    const d = new Date(state.cal.y, state.cal.m + Number(id), 1);
+    state.cal = { y: d.getFullYear(), m: d.getMonth() };
+    return render();
+  }
+  if (action === 'cal-day') {
+    state.calDay = id;
+    tick();
+    return render();
+  }
+  if (action === 'add-home') {
+    try { tg.addToHomeScreen(); } catch { /* старый клиент */ }
+    return;
+  }
+  if (action === 'hide-home') {
+    writeJSON(HOME_KEY, true);
+    return render();
+  }
   if (action === 'new-note') {
     const n = { id: uid(), type: 'note', text: '', updatedAt: Date.now(), by: me, saved: false };
     notes.push(n);
@@ -799,6 +1040,17 @@ function handleAction(action, id) {
   if (!o) return;
   if (action === 'map') {
     openLink('https://yandex.ru/maps/?mode=search&text=' + encodeURIComponent(o.address));
+  } else if (action === 'photo-delete') {
+    confirmAsk('Удалить фото?', ok => {
+      if (!ok) return;
+      const idx = Number(data.idx);
+      const path = o.photos[idx];
+      o.photos = o.photos.filter((_, i) => i !== idx);
+      saveOrders();
+      push({ action: 'save', order: o });
+      if (!path.startsWith('data:')) push({ action: 'unphoto', path });
+      back();
+    });
   } else if (action === 'delete') {
     confirmAsk('Удалить заказ? Это нельзя отменить.', ok => {
       if (!ok) return;
@@ -806,20 +1058,23 @@ function handleAction(action, id) {
       saveOrders();
       push({ action: 'delete', id });
       state.stack = state.stack.filter(s => s.id !== id);
-      render(true);
+      render(true, 'pop');
     });
   }
 }
 
 /* ---------- события ---------- */
 document.addEventListener('click', e => {
-  if (e.target.closest('a[href]')) return;
+  if (e.target.closest('a[href], label.add')) return;
   const act = e.target.closest('[data-action]');
-  if (act) return handleAction(act.dataset.action, act.dataset.id);
+  if (act) return handleAction(act.dataset.action, act.dataset.id, act.dataset);
   const tab = e.target.closest('[data-tab]');
   if (tab) return setTab(tab.dataset.tab);
   const target = e.target.closest('[data-go]');
-  if (target) go({ type: target.dataset.go, id: target.dataset.id });
+  if (target) {
+    const { go: type, ...rest } = target.dataset;
+    go({ type, ...rest });
+  }
 });
 
 document.addEventListener('submit', e => {
@@ -830,18 +1085,29 @@ document.addEventListener('submit', e => {
   if (form.dataset.form === 'complete') saveComplete(form.dataset.id, fd);
 });
 
-// живой пересчёт долей при вводе суммы
+// живой пересчёт долей при вводе суммы и подсказка про занятый день
 function updatePreview(e) {
   const form = e.target.closest('form');
-  const preview = form && form.querySelector('#split-preview');
-  if (!preview) return;
-  const finder = form.elements.finder?.value || form.dataset.finder;
-  preview.innerHTML = splitPreview(finder, form.elements.earned?.value);
+  if (!form) return;
+  const preview = form.querySelector('#split-preview');
+  if (preview) {
+    const finder = form.elements.finder?.value || form.dataset.finder;
+    preview.innerHTML = splitPreview(finder, form.elements.earned?.value);
+  }
+  const hint = form.querySelector('#date-hint');
+  if (hint && e.target.name === 'date') hint.innerHTML = dateHint(e.target.value, form.dataset.id);
 }
 document.addEventListener('input', updatePreview);
+document.addEventListener('change', updatePreview);
 
-// заметка сохраняется сама, пока печатаешь
 document.addEventListener('input', e => {
+  // поиск по истории: перерисовываем только список, чтобы не терять фокус
+  if (e.target.id === 'history-q') {
+    state.historyQuery = e.target.value;
+    document.getElementById('history-list').innerHTML = historyList();
+    return;
+  }
+  // заметка сохраняется сама, пока печатаешь
   const n = e.target.dataset?.note && findNote(e.target.dataset.note);
   if (!n) return;
   n.text = e.target.value;
@@ -853,7 +1119,14 @@ document.addEventListener('input', e => {
   const meta = document.getElementById('note-meta');
   if (meta) meta.textContent = [n.by, fmtAgo(n.updatedAt)].filter(Boolean).join(' · ');
 });
-document.addEventListener('change', updatePreview);
+
+document.addEventListener('change', e => {
+  const id = e.target.dataset?.photoFor;
+  if (!id || !e.target.files?.length) return;
+  const files = [...e.target.files];
+  e.target.value = '';
+  addPhotos(id, files);
+});
 
 /* ---------- старт ---------- */
 function applyTheme() {
@@ -863,6 +1136,7 @@ function applyTheme() {
   try {
     tg.setHeaderColor(dark ? '#000000' : '#F2F2F7');
     tg.setBackgroundColor(dark ? '#000000' : '#F2F2F7');
+    tg.setBottomBarColor?.(dark ? '#000000' : '#F2F2F7');
   } catch { /* старый клиент */ }
 }
 
@@ -872,6 +1146,23 @@ if (inTelegram) {
   applyTheme();
   tg.onEvent('themeChanged', applyTheme);
   if (tgBack) tg.BackButton.onClick(back);
+  // на телефоне — во весь экран, как обычное приложение
+  if (tgVersion('8.0') && ['ios', 'android'].includes(tg.platform)) {
+    try { tg.requestFullscreen(); } catch { /* не поддерживается */ }
+  }
+  // чтобы свайп вниз по списку не закрывал приложение
+  if (tgVersion('7.7')) tg.disableVerticalSwipes();
+  if (tgVersion('8.0')) {
+    tg.checkHomeScreenStatus(status => {
+      homeStatus = status;
+      if (state.tab === 'home' && !state.stack.length) render();
+    });
+    tg.onEvent('homeScreenAdded', () => {
+      homeStatus = 'added';
+      haptic('success');
+      render();
+    });
+  }
 }
 
 render();
