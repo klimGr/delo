@@ -316,3 +316,58 @@ textarea {
 .table thead th:first-child { width: 38%; }
 .table td small { color: var(--text2); }
 .table .total th, .table .total td { font-weight: 700; }
+/* ---------- полный экран Telegram ---------- */
+:root { --top: calc(var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px)); }
+#app { padding-top: calc(8px + var(--top)); }
+.navbar { margin-top: calc(-8px - var(--top)); padding-top: var(--top); height: calc(44px + var(--top)); }
+
+/* ---------- переходы ---------- */
+#app.push { animation: push .28s cubic-bezier(.2, .8, .2, 1); }
+#app.pop { animation: pop .22s ease-out; }
+@keyframes push { from { transform: translateX(24px); opacity: 0; } }
+@keyframes pop { from { transform: translateX(-16px); opacity: .4; } }
+
+/* ---------- иконка на экран ---------- */
+.promo { display: flex; align-items: center; gap: 12px; position: relative; }
+.promo-icon svg { width: 44px; height: 44px; display: block; }
+.promo-text { flex: 1; display: grid; font-size: 13px; color: var(--text2); }
+.promo-text b { font-size: 15px; color: var(--text); }
+.chip.solid { background: var(--accent); color: #fff; padding: 8px 14px; }
+.promo-x { position: absolute; top: 6px; right: 6px; color: var(--text3); }
+.promo-x svg { width: 16px; height: 16px; }
+
+/* ---------- фото ---------- */
+.photos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.thumb { position: relative; aspect-ratio: 1; border-radius: 12px; overflow: hidden; background: var(--card); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb.add { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; color: var(--accent); font-size: 13px; font-weight: 600; cursor: pointer; }
+.thumb.add input { position: absolute; inset: 0; opacity: 0; }
+.thumb.busy i { position: absolute; inset: 0; margin: auto; width: 24px; height: 24px; border: 3px solid var(--fill); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.photo-full { margin-top: 12px; }
+.photo-full img { width: 100%; border-radius: var(--radius); display: block; }
+
+/* ---------- календарь и переключатель ---------- */
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; margin-bottom: 12px; border-radius: 10px; background: var(--fill); }
+.seg button { padding: 7px; border-radius: 8px; font-size: 14px; font-weight: 600; text-align: center; }
+.seg button.on { background: var(--seg-on); box-shadow: 0 1px 4px rgba(0, 0, 0, .12); }
+.cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 17px; }
+.cal-nav { color: var(--accent); padding: 4px; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; }
+.wd { font-size: 12px; color: var(--text2); padding: 4px 0; }
+.day { display: flex; flex-direction: column; align-items: center; padding: 6px 0; border-radius: 10px; font-size: 16px; font-variant-numeric: tabular-nums; }
+.day.today span { color: var(--accent); font-weight: 700; }
+.day.sel { background: var(--accent); }
+.day.sel span { color: #fff; }
+.day b { display: flex; gap: 2px; height: 6px; margin-top: 2px; }
+.day b i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.day b i.done { background: var(--text3); }
+.day.sel b i { background: #fff; }
+.hint { display: flex; gap: 8px; align-items: flex-start; padding: 8px 16px 0; font-size: 13px; color: var(--klim); }
+.hint:empty { display: none; }
+.hint svg { width: 16px; height: 16px; margin-top: 1px; }
+
+/* ---------- поиск ---------- */
+.search { display: flex; align-items: center; gap: 8px; padding: 0 12px; height: 38px; border-radius: 10px; background: var(--fill); color: var(--text2); }
+.search svg { width: 18px; height: 18px; }
+.search input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; font-size: 17px; color: var(--text); }
