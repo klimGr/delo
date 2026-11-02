@@ -339,6 +339,8 @@ function render(scrollTop, anim) {
     app.classList.add(anim);
   }
   fitLabels();
+  // во время вводной анимации полоски ещё узкие — перепроверяем подписи, когда она закончится
+  if (app.querySelector('.intro')) setTimeout(fitLabels, 1100);
   if (loaded && !top && state.tab === 'home') state.intro = false;
 }
 
@@ -364,11 +366,36 @@ function haptic(type) {
 function tick() {
   try { tg?.HapticFeedback?.selectionChanged(); } catch { /* старый клиент */ }
 }
-function confirmAsk(text, cb) {
+function confirmAsk(text, cb, okLabel = 'Удалить') {
   if (inTelegram && tg.showConfirm) {
     try { tg.showConfirm(text, cb); return; } catch { /* старый клиент */ }
   }
-  cb(window.confirm(text));
+  // В браузере — своё окно: системный confirm() работает не везде
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-wrap';
+  wrap.innerHTML = `
+    <div class="sheet" role="alertdialog" aria-modal="true" aria-labelledby="sheet-text">
+      <p id="sheet-text">${esc(text)}</p>
+      <div class="sheet-actions">
+        <button class="btn secondary" data-sheet="no">Отмена</button>
+        <button class="btn danger-fill" data-sheet="yes">${esc(okLabel)}</button>
+      </div>
+    </div>`;
+  const done = ok => {
+    wrap.remove();
+    document.removeEventListener('keydown', onKey);
+    cb(ok);
+  };
+  const onKey = e => { if (e.key === 'Escape') done(false); };
+  wrap.addEventListener('click', e => {
+    e.stopPropagation();
+    const b = e.target.closest('[data-sheet]');
+    if (b) done(b.dataset.sheet === 'yes');
+    else if (e.target === wrap) done(false);
+  });
+  document.addEventListener('keydown', onKey);
+  document.body.append(wrap);
+  wrap.querySelector('[data-sheet="no"]').focus();
 }
 
 /* ---------- общие куски разметки ---------- */
@@ -381,6 +408,12 @@ const field = (label, control, cls = '') =>
   `<label class="field ${cls}"><span class="field-label">${label}</span><span class="field-control">${control}</span></label>`;
 const moneyField = (label, name, value, placeholder = '0', extra = '') =>
   field(label, `<input name="${name}" inputmode="decimal" placeholder="${placeholder}" value="${value ?? ''}" ${extra}><em>₽</em>`, 'num');
+// Вне Telegram — демо: честно говорим, что данные примерные
+const demoBanner = () => (remote ? '' : `
+  <div class="demo" role="note">
+    <span>Демо с примером данных. Изменения видны только в этом браузере.</span>
+    <button class="link" data-action="reset-demo">Сбросить</button>
+  </div>`);
 const emptyState = (title, text) => `<div class="empty"><div class="empty-title">${title}</div><p>${text}</p></div>`;
 
 // Фильтр «чей долг»; если такого владельца больше нет — показываем всех
@@ -532,7 +565,7 @@ function renderHome() {
   const list = visibleDebts();
   const open = list.filter(isOpen);
   const sorted = [...open].sort((a, b) => b.balance - a.balance).concat(list.filter(d => !isOpen(d)));
-  const head = `
+  const head = `${demoBanner()}
     <header class="hero row">
       <div>
         <div class="eyebrow">${WEEKDAYS_FULL[now.getDay()]}, ${now.getDate()} ${MONTHS_GEN[now.getMonth()]}</div>
@@ -584,6 +617,7 @@ function renderPayments() {
   }
 
   return `
+    ${demoBanner()}
     <header class="hero"><h1 class="large-title">Платежи</h1></header>
     ${ownerFilter()}
     <div class="card">
@@ -894,6 +928,16 @@ async function handleAction(action, id, el) {
     if (link) return openLink(link);
     if (inTelegram) return tg.close();
     return toast('В Telegram эта кнопка откроет чат с ботом');
+  }
+  if (action === 'reset-demo') {
+    return confirmAsk('Вернуть пример данных? Ваши изменения в демо пропадут.', ok => {
+      if (!ok) return;
+      data = seed();
+      saveLocal();
+      state.stack = [];
+      state.intro = true;
+      render(true);
+    }, 'Сбросить');
   }
   if (action === 'quick') {
     const input = app.querySelector('input[name="amount"]');
