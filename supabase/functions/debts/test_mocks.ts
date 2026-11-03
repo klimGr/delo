@@ -68,6 +68,9 @@ async function postgrest(req: Request) {
 export const claudeRequests: { headers: Headers; body: Record<string, unknown> }[] = [];
 export const script: unknown[][] = [];
 export const telegramCalls: { method: string; body: Row }[] = [];
+/** Ответы Gemini по очереди: объект JSON ответа или {status, body} для ошибки */
+export const geminiScript: (Row | { status: number; body: string })[] = [];
+export const geminiRequests: { url: string; headers: Headers; body: Row }[] = [];
 
 function sse(content: unknown[], stop: string) {
   const ev = (type: string, data: Record<string, unknown>) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
@@ -99,6 +102,13 @@ globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => 
     if (!content) throw new Error('Claude вызван больше раз, чем ожидалось');
     const stop = content.some(b => (b as Row).type === 'tool_use') ? 'tool_use' : 'end_turn';
     return new Response(sse(content, stop), { headers: { 'content-type': 'text/event-stream' } });
+  }
+  if (req.url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/')) {
+    geminiRequests.push({ url: req.url, headers: req.headers, body: await req.json() });
+    const next = geminiScript.shift();
+    if (!next) throw new Error('Gemini вызван больше раз, чем ожидалось');
+    if ('status' in next && typeof next.status === 'number') return new Response(String(next.body), { status: next.status });
+    return new Response(JSON.stringify(next), { headers: { 'content-type': 'application/json' } });
   }
   if (req.url.startsWith('https://api.telegram.org/bot')) {
     const method = req.url.split('/').pop()!;
