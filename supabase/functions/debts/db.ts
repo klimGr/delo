@@ -143,6 +143,16 @@ export async function claimReminder(debtId: string, due: string, stage: string) 
   return rows.length > 0;
 }
 
+/* ---------- служебный ключ ---------- */
+/** Ключ для /cron и /setup: общий секрет или cron_key из таблицы debt_settings (его знает только база) */
+export async function isServiceKey(key: string | null, secret: string) {
+  if (!key) return false;
+  if (secret && key === secret) return true;
+  const row = await sb.from('debt_settings').select('value').eq('key', 'cron_key').maybeSingle();
+  const own = (row.data as { value?: string } | null)?.value;
+  return !!own && key === own;
+}
+
 /* ---------- переписка ---------- */
 export async function history(chatId: number, n = 12): Promise<{ role: 'user' | 'assistant'; text: string }[]> {
   const rows = ok(await sb.from('debt_chat').select('role,text').eq('chat_id', chatId).order('id', { ascending: false }).limit(n)) as

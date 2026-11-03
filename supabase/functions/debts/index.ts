@@ -6,6 +6,7 @@
 import { handleApi } from './api.ts';
 import { handleUpdate, type TgUpdate } from './bot.ts';
 import { APP_URL, BOT_TOKEN, SECRET, SUPABASE_URL } from './config.ts';
+import { isServiceKey } from './db.ts';
 import { runReminders } from './reminders.ts';
 import { tg } from './telegram.ts';
 
@@ -66,12 +67,12 @@ Deno.serve(async req => {
     }
 
     if (route === 'cron') {
-      if ((req.headers.get('x-cron-key') || url.searchParams.get('key')) !== SECRET) return json({ error: 'forbidden' }, 403);
+      if (!(await isServiceKey(req.headers.get('x-cron-key') || url.searchParams.get('key'), SECRET))) return json({ error: 'forbidden' }, 403);
       return json(await runReminders());
     }
 
     if (route === 'setup') {
-      if (url.searchParams.get('key') !== SECRET) return json({ error: 'forbidden' }, 403);
+      if (!(await isServiceKey(url.searchParams.get('key') || req.headers.get('x-cron-key'), SECRET))) return json({ error: 'forbidden' }, 403);
       return json(await setup());
     }
 
