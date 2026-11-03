@@ -613,8 +613,9 @@ function renderHome() {
   const offerHome = homeStatus === 'missed' && !readJSON(HOME_KEY);
 
   return `
-    <header class="hero">
+    <header class="hero row">
       <div class="eyebrow">${WEEKDAYS_FULL[now.getDay()]}, ${now.getDate()} ${MONTHS_GEN[now.getMonth()]}</div>
+      <button class="pill-btn" data-go="edit">${ICON.plus}Новый заказ</button>
     </header>
 
     <div class="section-head lg">
