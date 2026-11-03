@@ -13,8 +13,13 @@ export const CHAT_MODELS = [
   'openai/gpt-oss-120b',
   'llama-3.3-70b-versatile',
 ];
-// Видят картинки — ими переписываем фото договоров в текст
-export const VISION_MODELS = ['meta-llama/llama-4-maverick-17b-128e-instruct', 'meta-llama/llama-4-scout-17b-16e-instruct'];
+// Видят картинки — ими переписываем фото договоров в текст. Если ни одной из списка нет, берём похожую по названию
+export const VISION_MODELS = [
+  'qwen/qwen3.8-27b',
+  'meta-llama/llama-4-maverick-17b-128e-instruct',
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+];
+const LOOKS_VISUAL = /(vision|-vl|llama-4|qwen\/qwen3\.[5-9])/i;
 
 interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
 interface ChatMessage { role: 'system' | 'user' | 'assistant' | 'tool'; content: unknown; tool_calls?: ToolCall[]; tool_call_id?: string }
@@ -51,9 +56,9 @@ async function groq<T>(path: string, body?: unknown): Promise<T> {
 /* ---------- выбор модели ---------- */
 let available: string[] | null = null;
 
-async function pick(list: string[]) {
+async function pick(list: string[], like?: RegExp) {
   if (!available) available = (await groq<{ data: { id: string }[] }>('/models')).data.map(m => m.id);
-  return list.find(m => available!.includes(m)) ?? null;
+  return list.find(m => available!.includes(m)) ?? (like && available.find(m => like.test(m))) ?? null;
 }
 
 /** Для /ai-check: какие модели будут работать (ключ не раскрывается) */
@@ -61,8 +66,14 @@ export async function checkGroq() {
   if (!GROQ_API_KEY()) return { configured: false };
   try {
     const chat = await pick(CHAT_MODELS);
-    const vision = await pick(VISION_MODELS);
+    const vision = await pick(VISION_MODELS, LOOKS_VISUAL);
     let reply = '';
+    let seen = '';
+    if (vision) {
+      const { PROBE_PNG } = await import('./probe_image.ts');
+      const probe = { file: { id: 'probe', name: 'probe.png', type: 'photo' as const }, mime: 'image/png', base64: PROBE_PNG };
+      seen = (await readImage(probe).catch(e => `ошибка: ${e}`)).slice(0, 120);
+    }
     if (chat) {
       const res = await groq<ChatResponse>('/chat/completions', {
         model: chat,
@@ -71,7 +82,7 @@ export async function checkGroq() {
       });
       reply = String(res.choices?.[0]?.message?.content ?? '').slice(0, 40);
     }
-    return { configured: true, chat, vision, reply, models: available };
+    return { configured: true, chat, vision, reply, seen, models: available };
   } catch (e) {
     return { configured: true, error: e instanceof AiError ? `${e.kind}: ${e.message.slice(0, 200)}` : String(e) };
   }
@@ -86,7 +97,7 @@ async function readPdf(a: Attachment) {
 }
 
 async function readImage(a: Attachment) {
-  const model = await pick(VISION_MODELS);
+  const model = await pick(VISION_MODELS, LOOKS_VISUAL);
   if (!model) return '';
   const res = await groq<ChatResponse>('/chat/completions', {
     model,
