@@ -34,7 +34,7 @@
 4. Telegram ID — свой и жены. Узнать можно у [@userinfobot](https://t.me/userinfobot) или позже: бот сам пришлёт ID любому, кого ещё нет в списке.
 
 ### 2. База
-Supabase → **SQL Editor** → вставьте и выполните `supabase/migrations/20261102120000_debts.sql`.
+Supabase → **SQL Editor** → по очереди выполните файлы из `supabase/migrations/` (все `*debt*`): таблицы, служебный ключ для расписания и права для серверной функции. В новых проектах Supabase таблицы по умолчанию закрыты даже для серверной роли — без последнего файла бот не увидит базу.
 
 ### 3. Секреты и деплой функции
 Supabase → **Edge Functions → Secrets** (или через CLI):
@@ -62,19 +62,20 @@ https://uizymjtflqoicpnifoue.supabase.co/functions/v1/debts/setup?key=ваш-с�
 Это подключит вебхук, команды и кнопку «Долги» в меню бота. В ответ придёт `"ok": true` и имя бота.
 
 ### 5. Напоминания каждый день в 10:00 по Москве
-Supabase → **Database → Extensions**: включите `pg_cron` и `pg_net`. Затем в SQL Editor:
+Расширения `pg_cron` и `pg_net` должны быть включены (Database → Extensions). Затем в SQL Editor:
 
 ```sql
-select cron.schedule('debts-reminders', '0 7 * * *', $$
+select cron.schedule('debts-reminders', '0 7 * * *', $job$
   select net.http_post(
     url := 'https://uizymjtflqoicpnifoue.supabase.co/functions/v1/debts/cron',
-    headers := '{"Content-Type": "application/json", "x-cron-key": "ваш-секрет"}'::jsonb,
+    headers := jsonb_build_object('Content-Type', 'application/json',
+      'x-cron-key', (select value from public.debt_settings where key = 'cron_key')),
     body := '{}'::jsonb
   );
-$$);
+$job$);
 ```
 
-`0 7 * * *` — это 07:00 UTC = 10:00 МСК. Проверить вручную: `https://…/functions/v1/debts/cron?key=ваш-секрет`.
+`0 7 * * *` — это 07:00 UTC = 10:00 МСК. Ключ `cron_key` база сгенерировала сама (миграция `debt_settings`), копировать его никуда не нужно.
 
 ### 6. Мини-приложение
 Папка `debts/` публикуется вместе с сайтом репозитория (GitHub Pages) по адресу `https://klimgr.github.io/delo/debts/` — этот адрес и нужно указать в `DEBTS_APP_URL`. Если Pages ещё не включён: Settings → Pages → Deploy from a branch → `main`.
