@@ -1,0 +1,18 @@
+// Настройки берутся из секретов Supabase (Project Settings → Edge Functions → Secrets)
+const env = (k: string, fallback = '') => Deno.env.get(k) ?? fallback;
+
+export const BOT_TOKEN = env('DEBTS_BOT_TOKEN');
+// Общий секрет: заголовок вебхука Telegram, ключ для cron и для /setup
+export const SECRET = env('DEBTS_SECRET');
+// Telegram ID тех, кому можно пользоваться ботом: «123,456»
+export const ALLOWED = new Set(env('DEBTS_ALLOWED_IDS').split(/[\s,;]+/).filter(Boolean));
+// Адрес мини-приложения, например https://klimgr.github.io/delo/debts/
+export const APP_URL = env('DEBTS_APP_URL');
+export const TZ = env('DEBTS_TZ', 'Europe/Moscow');
+export const MODEL = env('DEBTS_MODEL', 'claude-opus-5-5');
+export const EFFORT = env('DEBTS_EFFORT', 'medium') as 'low' | 'medium' | 'high';
+export const ANTHROPIC_API_KEY = env('ANTHROPIC_API_KEY');
+export const SUPABASE_URL = env('SUPABASE_URL');
+export const SERVICE_KEY = env('SUPABASE_SERVICE_ROLE_KEY');
+
+export const isAllowed = (id: number | string | undefined) => id !== undefined && ALLOWED.has(String(id));
