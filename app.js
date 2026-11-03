@@ -146,7 +146,7 @@ function seedOrders() {
     done(at(-1, 10), 'ivan', 'ул. Гагарина, 25, кв. 9', 'Сергей', '+7 903 410-22-33', vol(42, 12), 14800, 'Углы кривые, ушло больше клея.'),
     done(at(-9, 9), 'klim', 'ул. Пушкина, 40, кв. 3', 'Марина', '+7 915 200-30-40', vol(38, 0, 18), 23400),
     done(at(-16, 12), 'ivan', 'Набережная, 5, кв. 71', 'Виктор', '+7 999 111-00-22', vol(56, 20), 19200),
-    done(at(-24, 10), 'klim', 'ул. Чехова, 14', 'Ирина', '+7 905 777-88-99', vol(0, 34, 9), 15600),
+    { ...done(at(-24, 10), 'klim', 'ул. Чехова, 14', 'Ирина', '+7 905 777-88-99', vol(0, 34, 9), 15600), solo: true },
     done(at(-38, 9), 'ivan', 'ул. Кирова, 2, кв. 15', 'Павел', '+7 916 321-54-76', vol(64, 0, 22), 31000),
     done(at(-55, 10), 'klim', 'ул. Советская, 88, кв. 4', 'Елена', '+7 917 654-32-10', vol(48, 16), 18500),
   ];
@@ -217,8 +217,17 @@ const findOrder = id => orders.find(o => o.id === id);
 const doneOrders = () => orders.filter(o => o.status === 'done');
 const plannedOrders = () => orders.filter(o => o.status === 'planned').sort((a, b) => a.date.localeCompare(b.date));
 
+// Заказ «в одного» целиком того, кто его делал; иначе делим по тому, кто нашёл
+function splitOf(o) {
+  if (o.solo) return { ivan: o.finder === 'ivan' ? 1 : 0, klim: o.finder === 'klim' ? 1 : 0, label: '100%' };
+  return SPLIT[o.finder] || SPLIT.klim;
+}
+
+const MODES = [['team', 'Вдвоём'], ['ivan', 'Иван один'], ['klim', 'Клим один']];
+const modeOf = o => (o.solo ? o.finder : 'team');
+
 function shares(o) {
-  const s = SPLIT[o.finder] || SPLIT.klim;
+  const s = splitOf(o);
   const e = o.earned || 0;
   return { ivan: e * s.ivan, klim: e * s.klim };
 }
@@ -497,14 +506,51 @@ const emptyState = (title, text) =>
 const personLine = (p, v) =>
   `<div class="person"><span class="dot ${p}"></span><span>${PEOPLE[p]}</span><b>${money(v)}</b></div>`;
 
-function splitPreview(finder, earned) {
-  const s = SPLIT[finder] || SPLIT.klim;
+function splitPreview(finder, earned, solo) {
+  const s = splitOf({ finder, solo });
   const e = parseNum(earned);
+  const who = PEOPLE[finder] || PEOPLE.klim;
   return `
     <div><span class="dot ivan"></span>Иван · ${Math.round(s.ivan * 100)}%<b>${money(e * s.ivan)}</b></div>
     <div><span class="dot klim"></span>Клим · ${Math.round(s.klim * 100)}%<b>${money(e * s.klim)}</b></div>
-    <p>Заказ нашёл ${PEOPLE[finder] || PEOPLE.klim}, делим ${s.label}</p>`;
+    <p>${solo ? `${who} делал один — всё ему` : `Заказ нашёл ${who}, делим ${s.label}`}</p>`;
 }
+
+// Кто нашёл заказ + переключатель «делал один»
+function finderBlock(finder, solo) {
+  return `
+    <h2 class="section-title" id="finder-title">${solo ? 'Кто делал' : 'Кто нашёл заказ'}</h2>
+    <div class="segmented">
+      ${['ivan', 'klim'].map(p => `
+        <label><input type="radio" name="finder" value="${p}" ${finder === p ? 'checked' : ''}>
+        <span>${PEOPLE[p]}<small data-split="${p}">${solo ? '100%' : SPLIT[p].label}</small></span></label>`).join('')}
+    </div>
+    <label class="toggle-row">
+      <span><b>Делал один</b><small>Все деньги — тому, кто выбран выше</small></span>
+      <input type="checkbox" name="solo" ${solo ? 'checked' : ''}><i></i>
+    </label>`;
+}
+
+// Таблица «вдвоём / в одного» за месяц и за всё время
+function modeTable(cell) {
+  const all = doneOrders();
+  const cur = currentMonth();
+  const rows = MODES.map(([key, label]) => {
+    const a = all.filter(o => modeOf(o) === key);
+    const m = a.filter(o => monthKey(o.date) === cur);
+    return `<tr><th>${label}</th><td>${cell(m)}</td><td>${cell(a)}</td></tr>`;
+  }).join('');
+  return `
+    <h2 class="section-title">Вдвоём и в одного</h2>
+    <div class="card">
+      <table class="table">
+        <thead><tr><th></th><th>Этот месяц</th><th>Всё время</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+const ordersCount = list => `<small class="count">${list.length} ${plural(list.length, 'заказ', 'заказа', 'заказов')}</small>`;
 
 // Предупреждение, если на этот день уже что-то стоит
 function dateHint(date, selfId) {
@@ -523,7 +569,7 @@ function orderRow(o) {
     <button class="row" data-go="order" data-id="${o.id}">
       <div class="row-main">
         <div class="row-title">${esc(o.address)}</div>
-        <div class="row-sub">${esc(fmtDate(o.date))}${o.client ? ' · ' + esc(o.client) : ''}</div>
+        <div class="row-sub">${o.solo ? `<span class="solo-tag">${PEOPLE[o.finder]} один</span>` : ''}${esc(fmtDate(o.date))}${o.client ? ' · ' + esc(o.client) : ''}</div>
       </div>
       <div class="row-side">${side}</div>
       ${ICON.chevron}
@@ -748,7 +794,9 @@ function renderOrder({ id }) {
     <div class="list">
       ${infoRow('Имя', esc(o.client) || '—')}
       ${o.phone ? infoRow('Телефон', `<a href="${telHref(o.phone)}">${esc(o.phone)}</a>`) : ''}
-      ${infoRow('Нашёл заказ', `${PEOPLE[o.finder]} · ${SPLIT[o.finder].label}`)}
+      ${o.solo
+        ? infoRow('Делал', `${PEOPLE[o.finder]} один · 100%`)
+        : infoRow('Нашёл заказ', `${PEOPLE[o.finder]} · ${SPLIT[o.finder].label}`)}
     </div>
 
     ${o.notes ? textBlock('Заметки', o.notes) : ''}
@@ -815,12 +863,7 @@ function renderEdit({ id, day }) {
         ${field('Телефон', `<input name="phone" type="tel" inputmode="tel" placeholder="+7 900 123-45-67" value="${esc(o?.phone)}">`)}
       </div>
 
-      <h2 class="section-title">Кто нашёл заказ</h2>
-      <div class="segmented">
-        ${['ivan', 'klim'].map(p => `
-          <label><input type="radio" name="finder" value="${p}" ${finder === p ? 'checked' : ''}>
-          <span>${PEOPLE[p]}<small>${SPLIT[p].label}</small></span></label>`).join('')}
-      </div>
+      ${finderBlock(finder, !!o?.solo)}
 
       <h2 class="section-title">${isDone ? 'Уложено' : 'Объём, примерно'}</h2>
       <div class="list">${KINDS.map(k => numField(k, vols[k.key])).join('')}</div>
@@ -828,7 +871,7 @@ function renderEdit({ id, day }) {
       ${isDone ? `
         <h2 class="section-title">Заработано</h2>
         <div class="list">${field('Сумма', `<input name="earned" inputmode="decimal" placeholder="0" value="${o.earned || ''}"><em>₽</em>`, 'num')}</div>
-        <div class="split-preview" id="split-preview">${splitPreview(finder, o.earned)}</div>
+        <div class="split-preview" id="split-preview">${splitPreview(finder, o.earned, o.solo)}</div>
         ${textareaBlock('Комментарий', 'comment', o.comment, 'Как прошло, что учесть')}` : ''}
 
       ${textareaBlock('Заметки', 'notes', o?.notes, 'Код домофона, этаж, парковка…')}
@@ -843,7 +886,7 @@ function renderComplete({ id }) {
   const vols = o.fact || o.plan || {};
 
   return `
-    <form data-form="complete" data-id="${o.id}" data-finder="${o.finder}" autocomplete="off">
+    <form data-form="complete" data-id="${o.id}" autocomplete="off">
       ${navBar('Заказ выполнен', '<button class="nav-link strong" type="submit">Готово</button>')}
       <div class="caption center" style="padding-top:8px">${esc(o.address)}</div>
 
@@ -852,7 +895,9 @@ function renderComplete({ id }) {
 
       <h2 class="section-title">Сколько заработали</h2>
       <div class="list">${field('Сумма', `<input name="earned" inputmode="decimal" placeholder="0" required value="${o.earned || ''}"><em>₽</em>`, 'num')}</div>
-      <div class="split-preview" id="split-preview">${splitPreview(o.finder, o.earned)}</div>
+      <div class="split-preview" id="split-preview">${splitPreview(o.finder, o.earned, o.solo)}</div>
+
+      ${finderBlock(o.finder, !!o.solo)}
 
       ${textareaBlock('Комментарий', 'comment', o.comment, 'Как прошло, что учесть на будущее')}
 
@@ -877,6 +922,11 @@ function renderStats() {
         </tbody>
       </table>
     </div>
+
+    ${modeTable(list => {
+      const t = totals(list);
+      return `${num(lin(t))} <small>м</small>${t.panels ? `<small class="count">+ ${num(t.panels)} м² панелей</small>` : ''}${ordersCount(list)}`;
+    })}
 
     ${groups.length ? `
       <h2 class="section-title">По месяцам</h2>
@@ -914,6 +964,8 @@ function renderMoney() {
         </tbody>
       </table>
     </div>
+
+    ${modeTable(list => `${money(totals(list).earned)}${ordersCount(list)}`)}
 
     ${groups.length ? `
       <h2 class="section-title">По месяцам</h2>
@@ -965,6 +1017,7 @@ function saveEdit(id, fd) {
   o.client = String(fd.get('client') || '').trim();
   o.phone = String(fd.get('phone') || '').trim();
   o.finder = fd.get('finder') || 'klim';
+  o.solo = fd.get('solo') === 'on';
   o.notes = String(fd.get('notes') || '').trim();
   if (o.status === 'done') {
     o.fact = readKinds(fd);
@@ -984,6 +1037,8 @@ function saveComplete(id, fd) {
   const o = findOrder(id);
   if (!o) return back();
   o.status = 'done';
+  o.finder = fd.get('finder') || o.finder;
+  o.solo = fd.get('solo') === 'on';
   o.fact = readKinds(fd);
   o.earned = parseNum(fd.get('earned'));
   o.comment = String(fd.get('comment') || '').trim();
@@ -1089,11 +1144,14 @@ document.addEventListener('submit', e => {
 function updatePreview(e) {
   const form = e.target.closest('form');
   if (!form) return;
+  const finder = form.elements.finder?.value;
+  const solo = !!form.elements.solo?.checked;
   const preview = form.querySelector('#split-preview');
-  if (preview) {
-    const finder = form.elements.finder?.value || form.dataset.finder;
-    preview.innerHTML = splitPreview(finder, form.elements.earned?.value);
-  }
+  if (preview) preview.innerHTML = splitPreview(finder, form.elements.earned?.value, solo);
+  // подписи под Иван/Клим и заголовок меняются вместе с «делал один»
+  for (const s of form.querySelectorAll('small[data-split]')) s.textContent = solo ? '100%' : SPLIT[s.dataset.split].label;
+  const title = form.querySelector('#finder-title');
+  if (title) title.textContent = solo ? 'Кто делал' : 'Кто нашёл заказ';
   const hint = form.querySelector('#date-hint');
   if (hint && e.target.name === 'date') hint.innerHTML = dateHint(e.target.value, form.dataset.id);
 }
