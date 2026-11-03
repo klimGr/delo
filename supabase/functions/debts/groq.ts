@@ -71,7 +71,7 @@ export async function checkGroq() {
       });
       reply = String(res.choices?.[0]?.message?.content ?? '').slice(0, 40);
     }
-    return { configured: true, chat, vision, reply };
+    return { configured: true, chat, vision, reply, models: available };
   } catch (e) {
     return { configured: true, error: e instanceof AiError ? `${e.kind}: ${e.message.slice(0, 200)}` : String(e) };
   }
