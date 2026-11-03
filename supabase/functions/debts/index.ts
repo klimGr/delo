@@ -2,10 +2,12 @@
 //   POST /debts/webhook — обновления от Telegram
 //   POST /debts/cron    — ежедневные напоминания (pg_cron, заголовок x-cron-key)
 //   GET  /debts/setup?key=… — подключить вебхук, меню и команды бота (один раз после деплоя)
+//   GET  /debts/ai-check — проверить ключ ИИ и подобрать модель
 //   POST /debts         — API мини-приложения
 import { handleApi } from './api.ts';
 import { handleUpdate, type TgUpdate } from './bot.ts';
-import { APP_URL, BOT_TOKEN, SECRET, SUPABASE_URL } from './config.ts';
+import { APP_URL, BOT_TOKEN, GEMINI_API_KEY, SECRET, SUPABASE_URL } from './config.ts';
+import { isServiceKey } from './db.ts';
 import { runReminders } from './reminders.ts';
 import { tg } from './telegram.ts';
 
@@ -66,13 +68,26 @@ Deno.serve(async req => {
     }
 
     if (route === 'cron') {
-      if ((req.headers.get('x-cron-key') || url.searchParams.get('key')) !== SECRET) return json({ error: 'forbidden' }, 403);
+      if (!(await isServiceKey(req.headers.get('x-cron-key') || url.searchParams.get('key'), SECRET))) return json({ error: 'forbidden' }, 403);
       return json(await runReminders());
     }
 
     if (route === 'setup') {
-      if (url.searchParams.get('key') !== SECRET) return json({ error: 'forbidden' }, 403);
+      if (!(await isServiceKey(url.searchParams.get('key') || req.headers.get('x-cron-key'), SECRET))) return json({ error: 'forbidden' }, 403);
       return json(await setup());
+    }
+
+    // Проверка ключа ИИ: какие модели отвечают (ключ не раскрывается)
+    if (route === 'ai-check') {
+      if (!(await isServiceKey(url.searchParams.get('key') || req.headers.get('x-cron-key'), SECRET))) return json({ error: 'forbidden' }, 403);
+      const { checkGemini, MODEL_CANDIDATES } = await import('./gemini.ts');
+      const { checkGroq } = await import('./groq.ts');
+      const models = url.searchParams.get('models')?.split(',').filter(Boolean) ?? MODEL_CANDIDATES;
+      const [gemini, groq] = await Promise.all([
+        GEMINI_API_KEY() ? checkGemini(models) : { configured: false },
+        checkGroq(),
+      ]);
+      return json({ gemini, groq });
     }
 
     if (req.method === 'POST') {

@@ -71,6 +71,10 @@ export const telegramCalls: { method: string; body: Row }[] = [];
 /** Ответы Gemini по очереди: объект JSON ответа или {status, body} для ошибки */
 export const geminiScript: (Row | { status: number; body: string })[] = [];
 export const geminiRequests: { url: string; headers: Headers; body: Row }[] = [];
+/** Groq: список моделей аккаунта и ответы чата по очереди */
+export const groqModels: string[] = ['openai/gpt-oss-120b', 'llama-3.3-70b-versatile', 'meta-llama/llama-4-scout-17b-16e-instruct'];
+export const groqScript: (Row | { status: number; body: string })[] = [];
+export const groqRequests: { url: string; headers: Headers; body: Row }[] = [];
 
 function sse(content: unknown[], stop: string) {
   const ev = (type: string, data: Record<string, unknown>) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
@@ -103,10 +107,18 @@ globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => 
     const stop = content.some(b => (b as Row).type === 'tool_use') ? 'tool_use' : 'end_turn';
     return new Response(sse(content, stop), { headers: { 'content-type': 'text/event-stream' } });
   }
-  if (req.url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/')) {
+  if (req.url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/') || req.url.startsWith('https://aiplatform.googleapis.com/v1/publishers/google/models/')) {
     geminiRequests.push({ url: req.url, headers: req.headers, body: await req.json() });
     const next = geminiScript.shift();
     if (!next) throw new Error('Gemini вызван больше раз, чем ожидалось');
+    if ('status' in next && typeof next.status === 'number') return new Response(String(next.body), { status: next.status });
+    return new Response(JSON.stringify(next), { headers: { 'content-type': 'application/json' } });
+  }
+  if (req.url.startsWith('https://api.groq.com/openai/v1/')) {
+    if (req.url.endsWith('/models')) return new Response(JSON.stringify({ data: groqModels.map(id => ({ id })) }));
+    groqRequests.push({ url: req.url, headers: req.headers, body: await req.json() });
+    const next = groqScript.shift();
+    if (!next) throw new Error('Groq вызван больше раз, чем ожидалось');
     if ('status' in next && typeof next.status === 'number') return new Response(String(next.body), { status: next.status });
     return new Response(JSON.stringify(next), { headers: { 'content-type': 'application/json' } });
   }

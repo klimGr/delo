@@ -1,5 +1,8 @@
 // Модель Google Gemini через REST API (есть бесплатный тариф). Включается, если задан GEMINI_API_KEY.
-// Формат запросов сверен с официальным SDK @google/genai: generateContent, functionDeclarations
+// Подходят два вида ключей Google:
+//   • ключ Google AI Studio (AIza…) — Gemini API, generativelanguage.googleapis.com;
+//   • ключ Vertex AI в экспресс-режиме (AQ.…) — aiplatform.googleapis.com.
+// Формат запросов у них общий и сверен с официальным SDK @google/genai: generateContent, functionDeclarations
 // с parametersJsonSchema, ответы инструментов — functionResponse {id, name, response: {output|error}}.
 import { AiError, type RunArgs, runTool, SYSTEM, TOOLS } from './assistant.ts';
 import { GEMINI_API_KEY, GEMINI_MODEL } from './config.ts';
@@ -31,22 +34,38 @@ function errorFor(status: number, body: string): AiError {
   return new AiError('bad', body);
 }
 
+export const isVertexKey = (key: string) => key.startsWith('AQ.');
+
+/** Модели, которые пробуем по очереди, если DEBTS_GEMINI_MODEL не задан */
+export const MODEL_CANDIDATES = ['gemini-flash-latest', 'gemini-3-flash', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
+
+/** Как передать ключ: в заголовке x-goog-api-key, в адресе (?key=, как в документации экспресс-режима Vertex) или как Bearer */
+type Auth = 'header' | 'query' | 'bearer';
+
+function request(model: string, key: string, auth: Auth, body: unknown): [string, RequestInit] {
+  const base = isVertexKey(key)
+    ? `https://aiplatform.googleapis.com/v1/publishers/google/models/${model}:generateContent`
+    : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (auth === 'header') headers['x-goog-api-key'] = key;
+  if (auth === 'bearer') headers.Authorization = `Bearer ${key}`;
+  const url = auth === 'query' ? `${base}?key=${encodeURIComponent(key)}` : base;
+  return [url, { method: 'POST', headers, body: JSON.stringify(body) }];
+}
+
 async function generate(contents: Content[]): Promise<GeminiResponse> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL()}:generateContent`;
+  const key = GEMINI_API_KEY();
+  const { model, auth } = await working();
+  const [url, init] = request(model, key, auth, {
+    systemInstruction: { parts: [{ text: SYSTEM }] },
+    contents,
+    tools: [{ functionDeclarations: declarations }],
+    toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
+    generationConfig: { maxOutputTokens: 16384 },
+  });
   let res: Response;
   try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY() },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM }] },
-        contents,
-        tools: [{ functionDeclarations: declarations }],
-        toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
-        generationConfig: { maxOutputTokens: 16384 },
-      }),
-      signal: AbortSignal.timeout(120_000),
-    });
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(120_000) });
   } catch (e) {
     throw new AiError('down', String(e));
   }
@@ -105,4 +124,60 @@ export async function runGemini({ history, context, attachments, userText, ctx }
     contents.push({ role: 'user', parts: responses });
   }
   return '';
+}
+
+/* ---------- подбор модели и проверка ключа ---------- */
+let found: { model: string; auth: Auth } | null = null;
+
+/** Модель и способ передачи ключа, которые работают с этим ключом (запоминаем до перезапуска функции) */
+async function working() {
+  if (found) return found;
+  // Ключ AI Studio с заданной моделью проверять незачем; для Vertex узнаём, как передавать ключ
+  if (GEMINI_MODEL() && !isVertexKey(GEMINI_API_KEY())) return { model: GEMINI_MODEL(), auth: 'header' as Auth };
+  const models = GEMINI_MODEL() ? [GEMINI_MODEL()] : MODEL_CANDIDATES;
+  const check = await checkGemini(models);
+  const ok = check.results.find(r => r.status === 200);
+  if (!ok) {
+    const last = check.results.at(-1);
+    throw errorFor(last?.status ?? 500, last?.message ?? 'нет ответа');
+  }
+  found = { model: ok.model, auth: ok.auth };
+  return found;
+}
+
+/** Пробный запрос к каждой модели по очереди — для /ai-check и подбора модели. Ключ не раскрывается */
+export async function checkGemini(models: string[]) {
+  const key = GEMINI_API_KEY();
+  const results: { model: string; auth: Auth; status: number; message: string }[] = [];
+  // Ключ AI Studio всегда в заголовке; для ключа Vertex пробуем все способы
+  const auths: Auth[] = isVertexKey(key) ? ['query', 'header', 'bearer'] : ['header'];
+  const probe = {
+    systemInstruction: { parts: [{ text: 'Отвечай одним словом.' }] },
+    contents: [{ role: 'user', parts: [{ text: 'Скажи «ок».' }] }],
+    tools: [{ functionDeclarations: declarations }],
+  };
+  for (const model of models) for (const auth of auths) {
+    // способ, который уже дал «ключ не тот», для следующих моделей не повторяем
+    if (results.some(r => r.auth === auth && r.status === 401)) continue;
+    let status = 0;
+    let message = '';
+    try {
+      const [url, init] = request(model, key, auth, probe);
+      const res = await fetch(url, { ...init, signal: AbortSignal.timeout(30_000) });
+      status = res.status;
+      const body = await res.text();
+      if (res.ok) {
+        const parsed = JSON.parse(body) as GeminiResponse;
+        message = (parsed.candidates?.[0]?.content?.parts ?? []).map(p => p.text ?? '').join('').slice(0, 40);
+      } else {
+        const err = parseJson(body)?.error ?? {};
+        message = `${err.status ?? ''} ${err.message ?? body}`.slice(0, 300);
+      }
+    } catch (e) {
+      message = String(e).slice(0, 200);
+    }
+    results.push({ model, auth, status, message });
+    if (status === 200) return { vertex: isVertexKey(key), keyLength: key.length, results };
+  }
+  return { vertex: isVertexKey(key), keyLength: key.length, results };
 }

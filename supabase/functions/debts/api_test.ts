@@ -41,3 +41,13 @@ Deno.test('приложение: долг, платёж, история; чуж�
   assert(forged.status === 401, 'подделка прошла');
   assert(tables.debts.length === 1, 'лишние записи');
 });
+
+Deno.test('служебный ключ: секрет или cron_key из базы', async () => {
+  const { isServiceKey } = await import('./db.ts');
+  tables.debt_settings = [{ key: 'cron_key', value: 'abc123' }];
+  assert(await isServiceKey('abc123', 'secret'), 'cron_key не принят');
+  assert(await isServiceKey('secret', 'secret'), 'секрет не принят');
+  assert(!(await isServiceKey('wrong', 'secret')), 'чужой ключ принят');
+  assert(!(await isServiceKey(null, '')), 'пустой ключ принят');
+  assert(!(await isServiceKey('', '')), 'пустой секрет принят');
+});

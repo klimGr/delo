@@ -1,6 +1,6 @@
 // Общая часть помощника: подсказка для модели, инструменты, контекст и разговор.
-// Сама модель подключается отдельно: Gemini (gemini.ts, бесплатный тариф Google) или Claude (claude.ts).
-import { ANTHROPIC_API_KEY, GEMINI_API_KEY } from './config.ts';
+// Сама модель подключается отдельно: Gemini (gemini.ts), Groq (groq.ts) — оба бесплатные — или Claude (claude.ts).
+import { ANTHROPIC_API_KEY, GEMINI_API_KEY, GROQ_API_KEY } from './config.ts';
 import * as db from './db.ts';
 import { daysBetween, type Debt, type DebtFile, isDate, KINDS, nextDue, payoffMonths, pctLeft } from './logic.ts';
 import * as svc from './service.ts';
@@ -235,23 +235,47 @@ export interface Turn { role: 'user' | 'assistant'; text: string }
 export interface RunArgs { history: Turn[]; context: string; attachments: Attachment[]; userText: string; ctx: Ctx }
 export type Runner = (args: RunArgs) => Promise<string>;
 
-/** Какая модель отвечает: DEBTS_AI=gemini|claude, иначе та, для которой задан ключ (сначала Gemini) */
-async function runner(): Promise<Runner> {
-  const choice = Deno.env.get('DEBTS_AI') || (GEMINI_API_KEY() ? 'gemini' : ANTHROPIC_API_KEY() ? 'claude' : '');
-  if (choice === 'gemini' && GEMINI_API_KEY()) return (await import('./gemini.ts')).runGemini;
-  if (choice === 'claude' && ANTHROPIC_API_KEY()) return (await import('./claude.ts')).runClaude;
-  throw new AiError('none');
+type Provider = 'gemini' | 'groq' | 'claude';
+const KEYS: Record<Provider, () => string> = { gemini: GEMINI_API_KEY, groq: GROQ_API_KEY, claude: ANTHROPIC_API_KEY };
+// Провайдер с неподходящим ключом пропускаем час, чтобы не тратить на него время в каждом сообщении
+const broken = new Map<Provider, number>();
+
+async function load(p: Provider): Promise<Runner> {
+  if (p === 'gemini') return (await import('./gemini.ts')).runGemini;
+  if (p === 'groq') return (await import('./groq.ts')).runGroq;
+  return (await import('./claude.ts')).runClaude;
+}
+
+/** Кого пробуем по очереди: DEBTS_AI=gemini|groq|claude — только его; иначе все, для кого задан ключ */
+function providers(): Provider[] {
+  const forced = Deno.env.get('DEBTS_AI') as Provider | undefined;
+  const all: Provider[] = forced && forced in KEYS ? [forced] : ['gemini', 'groq', 'claude'];
+  return all.filter(p => KEYS[p]() && (broken.get(p) ?? 0) < Date.now());
 }
 
 export async function chat(opts: { chatId: number; me: { id: string; name: string }; text: string; attachments: Attachment[] }) {
-  const run = await runner();
+  const list = providers();
+  if (!list.length) throw new AiError('none');
   const [st, past] = await Promise.all([svc.state(), db.history(opts.chatId)]);
   const history: Turn[] = [...past];
   while (history.length && history[0].role !== 'user') history.shift();
 
   const userText = opts.text.trim() || (opts.attachments.length ? 'Разбери документ и внеси в учёт.' : '');
   const ctx: Ctx = { by: opts.me.name, files: opts.attachments.map(a => a.file), today: st.today, changed: false };
-  let reply = await run({ history, context: contextText(st, opts.me), attachments: opts.attachments, userText, ctx });
+  const args: RunArgs = { history, context: contextText(st, opts.me), attachments: opts.attachments, userText, ctx };
+  let reply = '';
+  for (let i = 0; i < list.length; i++) {
+    try {
+      reply = await (await load(list[i]))(args);
+      break;
+    } catch (e) {
+      // Переходим к следующему ИИ, только если этот ещё ничего не успел изменить — иначе можно задвоить запись
+      const last = i === list.length - 1;
+      if (!(e instanceof AiError) || e.kind === 'bad' || ctx.changed || last) throw e;
+      if (e.kind === 'auth' || e.kind === 'region') broken.set(list[i], Date.now() + 3600e3);
+      console.error('ai fallback', list[i], e.kind, e.message.slice(0, 300));
+    }
+  }
   if (!reply) reply = ctx.changed ? 'Готово, данные обновил.' : 'Не получилось ответить. Попробуйте переформулировать.';
 
   const names = opts.attachments.map(a => a.file.name).join(', ');
