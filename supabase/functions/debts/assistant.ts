@@ -1,17 +1,11 @@
-// Разговор с Claude: разбор договоров и выписок, учёт платежей, советы.
-// Claude видит текущие долги и меняет их через инструменты — изменения сразу появляются в приложении.
-import Anthropic from 'npm:@anthropic-ai/sdk@1.3.0';
-import { ANTHROPIC_API_KEY, EFFORT, MODEL } from './config.ts';
+// Общая часть помощника: подсказка для модели, инструменты, контекст и разговор.
+// Сама модель подключается отдельно: Gemini (gemini.ts, бесплатный тариф Google) или Claude (claude.ts).
+import { ANTHROPIC_API_KEY, GEMINI_API_KEY } from './config.ts';
 import * as db from './db.ts';
 import { daysBetween, type Debt, type DebtFile, isDate, KINDS, nextDue, payoffMonths, pctLeft } from './logic.ts';
 import * as svc from './service.ts';
 
-type Block = Anthropic.Beta.BetaContentBlockParam;
-type Message = Anthropic.Beta.BetaMessageParam;
-
-const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
-
-const SYSTEM = `Ты — помощник семейной пары по долгам в Telegram-боте. У них кредитные карты, кредиты и займы. Твоя задача — держать учёт в порядке, помогать не пропускать платежи и вместе выбираться из долгов.
+export const SYSTEM = `Ты — помощник семейной пары по долгам в Telegram-боте. У них кредитные карты, кредиты и займы. Твоя задача — держать учёт в порядке, помогать не пропускать платежи и вместе выбираться из долгов.
 
 В начале каждого сообщения пользователя есть блок «Контекст»: сегодняшняя дата, кто пишет, участники и текущие долги в JSON. Это актуальные данные из базы — опирайся на них и ссылайся на долги по id. Всё, что ты меняешь инструментами, сразу видно в мини-приложении с графиком.
 
@@ -40,18 +34,15 @@ const debtFields = {
   notes: { type: 'string', description: 'Важное из договора: льготный период, ПСК, штрафы, страховка, номер договора' },
 } as const;
 
-const tool = (name: string, description: string, properties: Record<string, unknown>, required: string[]) => ({
-  name,
-  description,
-  eager_input_streaming: true,
-  input_schema: { type: 'object' as const, properties, required, additionalProperties: false },
-});
+export interface ToolDef { name: string; description: string; properties: Record<string, unknown>; required: string[] }
+const tool = (name: string, description: string, properties: Record<string, unknown>, required: string[]): ToolDef =>
+  ({ name, description, properties, required });
 
 const idField = { debt_id: { type: 'string', description: 'id долга из контекста' } };
 const dateField = { date: { type: 'string', description: 'Дата YYYY-MM-DD, по умолчанию сегодня' } };
 const noteField = { note: { type: 'string', description: 'Комментарий, необязательно' } };
 
-const TOOLS = [
+export const TOOLS: ToolDef[] = [
   tool('add_debt', 'Добавить новый долг: карту, кредит, займ или рассрочку.', debtFields, ['name', 'kind', 'balance']),
   tool('update_debt', 'Изменить данные существующего долга. Передавай только то, что меняется. closed=true — долг закрыт.', {
     ...idField,
@@ -137,9 +128,9 @@ const toInput = (o: Input): svc.DebtInput => ({
   closed: o.closed as boolean | undefined,
 });
 
-interface Ctx { by: string; files: DebtFile[]; today: string; changed: boolean }
+export interface Ctx { by: string; files: DebtFile[]; today: string; changed: boolean }
 
-async function runTool(name: string, raw: unknown, ctx: Ctx): Promise<{ content: string; isError?: boolean }> {
+export async function runTool(name: string, raw: unknown, ctx: Ctx): Promise<{ content: string; isError?: boolean }> {
   const def = SPECS[name];
   if (!def) return { content: `Нет инструмента ${name}`, isError: true };
   const problem = validate(raw, def.spec, def.required);
@@ -212,7 +203,7 @@ function brief(d: Debt, today: string) {
 
 const WEEKDAYS = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
 
-function contextText(st: Awaited<ReturnType<typeof svc.state>>, me: { id: string; name: string }) {
+export function contextText(st: Awaited<ReturnType<typeof svc.state>>, me: { id: string; name: string }) {
   const weekday = WEEKDAYS[new Date(st.today + 'T12:00:00Z').getUTCDay()];
   const people = st.members.map(m => `${m.name || 'без имени'} (id ${m.id})`).join(', ') || 'пока никого';
   return [
@@ -224,92 +215,43 @@ function contextText(st: Awaited<ReturnType<typeof svc.state>>, me: { id: string
   ].join('\n');
 }
 
-/* ---------- цикл ---------- */
-export interface Attachment { block: Block; file: DebtFile }
 
-/**
- * После отказа посреди ответа (сработала резервная модель) нельзя повторять в истории
- * размышления и вызовы инструментов, которые были до блока fallback.
- */
-function echoable(content: Anthropic.Beta.BetaContentBlock[]) {
-  const last = content.map(b => b.type as string).lastIndexOf('fallback');
-  if (last < 0) return content;
-  const drop = new Set(['thinking', 'redacted_thinking', 'tool_use', 'server_tool_use']);
-  return content.filter((b, i) => i > last || !drop.has(b.type));
+/* ---------- ошибки моделей ---------- */
+export type AiErrorKind = 'none' | 'auth' | 'rate' | 'region' | 'bad' | 'down';
+
+/** Ошибка ИИ, понятная боту: по ней он выбирает, что сказать человеку */
+export class AiError extends Error {
+  kind: AiErrorKind;
+  constructor(kind: AiErrorKind, message: string = kind) {
+    super(message);
+    this.kind = kind;
+  }
+}
+
+/* ---------- разговор ---------- */
+/** Файл из чата: PDF или картинка — в base64, текстовый файл — строкой */
+export interface Attachment { file: DebtFile; mime: string; base64?: string; text?: string }
+export interface Turn { role: 'user' | 'assistant'; text: string }
+export interface RunArgs { history: Turn[]; context: string; attachments: Attachment[]; userText: string; ctx: Ctx }
+export type Runner = (args: RunArgs) => Promise<string>;
+
+/** Какая модель отвечает: DEBTS_AI=gemini|claude, иначе та, для которой задан ключ (сначала Gemini) */
+async function runner(): Promise<Runner> {
+  const choice = Deno.env.get('DEBTS_AI') || (GEMINI_API_KEY() ? 'gemini' : ANTHROPIC_API_KEY() ? 'claude' : '');
+  if (choice === 'gemini' && GEMINI_API_KEY()) return (await import('./gemini.ts')).runGemini;
+  if (choice === 'claude' && ANTHROPIC_API_KEY()) return (await import('./claude.ts')).runClaude;
+  throw new AiError('none');
 }
 
 export async function chat(opts: { chatId: number; me: { id: string; name: string }; text: string; attachments: Attachment[] }) {
+  const run = await runner();
   const [st, past] = await Promise.all([svc.state(), db.history(opts.chatId)]);
-  const messages: Message[] = past.map(h => ({ role: h.role, content: h.text }));
-  while (messages.length && messages[0].role !== 'user') messages.shift();
+  const history: Turn[] = [...past];
+  while (history.length && history[0].role !== 'user') history.shift();
 
   const userText = opts.text.trim() || (opts.attachments.length ? 'Разбери документ и внеси в учёт.' : '');
-  messages.push({
-    role: 'user',
-    content: [
-      { type: 'text', text: contextText(st, opts.me) },
-      ...opts.attachments.map(a => a.block),
-      { type: 'text', text: userText },
-    ],
-  });
-
   const ctx: Ctx = { by: opts.me.name, files: opts.attachments.map(a => a.file), today: st.today, changed: false };
-  let reply = '';
-  let badJson = 0;
-
-  for (let turn = 0; turn < 10; turn++) {
-    const stream = client.beta.messages.stream({
-      model: MODEL,
-      max_tokens: 16000,
-      system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
-      tools: TOOLS,
-      messages,
-      cache_control: { type: 'ephemeral' },
-      output_config: { effort: EFFORT },
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default',
-    });
-
-    let msg: Anthropic.Beta.BetaMessage;
-    try {
-      msg = await stream.finalMessage();
-      badJson = 0;
-    } catch (err) {
-      // Повторяем только если не разобрался JSON аргументов; ошибки API пробрасываем
-      if (err instanceof Anthropic.APIError || badJson++ >= 2) throw err;
-      continue;
-    }
-
-    if (msg.stop_reason === 'refusal') {
-      reply = 'С этим помочь не могу. Давайте вернёмся к долгам и платежам.';
-      break;
-    }
-    const content = echoable(msg.content);
-    const said = content.filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text').map(b => b.text).join('\n').trim();
-
-    if (msg.stop_reason === 'pause_turn') {
-      messages.push({ role: 'assistant', content });
-      continue;
-    }
-    const uses = content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === 'tool_use');
-    if (!uses.length) {
-      reply = said;
-      break;
-    }
-    if (msg.stop_reason === 'max_tokens') {
-      reply = said || 'Ответ получился слишком длинным. Спросите, пожалуйста, покороче.';
-      break;
-    }
-
-    messages.push({ role: 'assistant', content });
-    const results: Block[] = [];
-    for (const u of uses) {
-      const r = await runTool(u.name, u.input, ctx);
-      results.push({ type: 'tool_result', tool_use_id: u.id, content: r.content, ...(r.isError ? { is_error: true } : {}) });
-    }
-    messages.push({ role: 'user', content: results });
-  }
-
+  let reply = await run({ history, context: contextText(st, opts.me), attachments: opts.attachments, userText, ctx });
   if (!reply) reply = ctx.changed ? 'Готово, данные обновил.' : 'Не получилось ответить. Попробуйте переформулировать.';
 
   const names = opts.attachments.map(a => a.file.name).join(', ');

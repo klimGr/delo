@@ -1,6 +1,5 @@
 // Обработка сообщений бота: команды, файлы, кнопки «Оплачено», разговор с Claude
-import Anthropic from 'npm:@anthropic-ai/sdk@1.3.0';
-import { chat, type Attachment } from './agent.ts';
+import { AiError, type Attachment, chat } from './assistant.ts';
 import { APP_URL, isAllowed, TZ } from './config.ts';
 import * as db from './db.ts';
 import { byMonth, dayMonth, esc, kindName, money, pct, toTelegramHtml, whenText } from './format.ts';
@@ -147,13 +146,11 @@ async function onFiles(m: TgMessage, files: db.MediaFile[], caption: string) {
     for (const f of files) {
       const { bytes } = await downloadFile(f.fileId);
       const ref = { id: f.fileId, name: f.name, type: f.type };
-      if (f.mime === 'application/pdf') {
-        attachments.push({ file: ref, block: { type: 'document', title: f.name, source: { type: 'base64', media_type: 'application/pdf', data: toBase64(bytes) } } });
-      } else if (f.mime.startsWith('image/')) {
-        if (bytes.length > 5e6) throw new svc.UserError('Картинка больше 5 МБ — пришлите её как фото, а не файлом.');
-        attachments.push({ file: ref, block: { type: 'image', source: { type: 'base64', media_type: f.mime as 'image/jpeg', data: toBase64(bytes) } } });
+      if (f.mime.startsWith('text/')) {
+        attachments.push({ file: ref, mime: f.mime, text: new TextDecoder().decode(bytes).slice(0, 200_000) });
       } else {
-        attachments.push({ file: ref, block: { type: 'document', title: f.name, source: { type: 'text', media_type: 'text/plain', data: new TextDecoder().decode(bytes).slice(0, 200_000) } } });
+        if (f.mime.startsWith('image/') && bytes.length > 5e6) throw new svc.UserError('Картинка больше 5 МБ — пришлите её как фото, а не файлом.');
+        attachments.push({ file: ref, mime: f.mime, base64: toBase64(bytes) });
       }
     }
     await talk(m, caption, attachments, stop);
@@ -184,10 +181,17 @@ async function talk(m: TgMessage, text: string, attachments: Attachment[], stopT
 
 function errorText(e: unknown) {
   if (e instanceof svc.UserError) return esc(e.message);
-  if (e instanceof Anthropic.RateLimitError) return 'Слишком много запросов к ИИ — попробуйте через минуту.';
-  if (e instanceof Anthropic.AuthenticationError) return 'Не настроен ключ ИИ (ANTHROPIC_API_KEY). Команды /summary и /next работают и без него.';
-  if (e instanceof Anthropic.BadRequestError) return 'ИИ не смог обработать этот запрос — возможно, файл слишком большой. Попробуйте другой файл или напишите текстом.';
-  if (e instanceof Anthropic.APIError) return 'ИИ сейчас недоступен. Попробуйте чуть позже.';
+  if (e instanceof AiError) {
+    console.error('ai', e.kind, e.message);
+    return {
+      none: 'ИИ пока не подключён, поэтому договоры и вопросы я не разбираю. Работают /summary, /next, напоминания и приложение.',
+      auth: 'Ключ ИИ не подошёл. Проверьте секрет GEMINI_API_KEY в Supabase.',
+      rate: 'Бесплатный лимит ИИ на сейчас закончился. Попробуйте через минуту, а если не поможет — завтра.',
+      region: 'Google не обслуживает регион, из которого пришёл запрос. Напишите разработчику — нужно сменить регион функции.',
+      bad: 'ИИ не смог обработать этот запрос — возможно, файл слишком большой. Пришлите другой файл или напишите текстом.',
+      down: 'ИИ сейчас недоступен. Попробуйте чуть позже.',
+    }[e.kind];
+  }
   return 'Что-то пошло не так. Попробуйте ещё раз.';
 }
 

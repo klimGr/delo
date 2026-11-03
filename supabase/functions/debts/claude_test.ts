@@ -1,10 +1,11 @@
-// Сквозной тест разговора без сети: подменяем API Claude (SSE-поток) и PostgREST Supabase (таблицы в памяти).
-// deno test --allow-env supabase/functions/debts/agent_test.ts
+// Сквозной тест разговора с Claude без сети: подменяем API Claude (SSE-поток) и PostgREST Supabase (таблицы в памяти).
+// deno test --allow-env supabase/functions/debts/claude_test.ts
 import { assert, claudeRequests, type Row, script, tables } from './test_mocks.ts';
 
-const { chat } = await import('./agent.ts');
+const { chat } = await import('./assistant.ts');
 
-Deno.test('договор → add_debt → ответ; затем платёж текстом', async () => {
+Deno.test('Claude: договор → add_debt → ответ; затем платёж текстом', async () => {
+  Deno.env.set('DEBTS_AI', 'claude');
   // 1. Прислали договор: Claude вызывает add_debt, потом отвечает текстом
   script.push(
     [
@@ -17,10 +18,7 @@ Deno.test('договор → add_debt → ответ; затем платёж �
     chatId: 42,
     me: { id: '42', name: 'Клим' },
     text: '',
-    attachments: [{
-      file: { id: 'FILE1', name: 'dogovor.pdf', type: 'document' },
-      block: { type: 'document', title: 'dogovor.pdf', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' } },
-    }],
+    attachments: [{ file: { id: 'FILE1', name: 'dogovor.pdf', type: 'document' }, mime: 'application/pdf', base64: 'JVBERi0=' }],
   });
   assert(r1.changed, 'изменение не отмечено');
   assert(r1.reply.includes('Тинькофф'), 'нет ответа модели');
