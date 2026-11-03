@@ -71,22 +71,26 @@ Deno.test('Gemini: договор → add_debt → ответ; платёж те
   assert(geminiScript.length === 0, 'не все ответы использованы');
 });
 
-Deno.test('Gemini: ключ Vertex AI (AQ.) и автоподбор модели', async () => {
+Deno.test('Gemini: ключ Vertex AI (AQ.) — подбор способа передачи ключа и модели', async () => {
   Deno.env.set('GEMINI_API_KEY', 'AQ.vertex-test-key');
   Deno.env.delete('DEBTS_GEMINI_MODEL');
   Deno.env.delete('DEBTS_AI');
   geminiRequests.length = 0;
-  // первая модель из списка не найдена, вторая отвечает; потом обычный ответ на сообщение
   geminiScript.push(
-    { status: 404, body: '{"error":{"status":"NOT_FOUND","message":"model not found"}}' },
-    reply([{ text: 'ок' }]),
-    reply([{ text: 'Привет! Чем помочь?' }]),
+    { status: 401, body: '{"error":{"status":"UNAUTHENTICATED","message":"API key not valid"}}' }, // ?key= не подошёл
+    { status: 404, body: '{"error":{"status":"NOT_FOUND","message":"model not found"}}' }, // в заголовке: модели нет
+    { status: 401, body: '{"error":{"status":"UNAUTHENTICATED","message":"API key not valid"}}' }, // Bearer не подошёл
+    reply([{ text: 'ок' }]), // вторая модель, ключ в заголовке — работает
+    reply([{ text: 'Привет! Чем помочь?' }]), // сам ответ на сообщение
   );
   const r = await chat({ chatId: 43, me: { id: '43', name: 'Маша' }, text: 'привет', attachments: [] });
   assert(r.reply === 'Привет! Чем помочь?', 'ответ: ' + r.reply);
-  const urls = geminiRequests.map(q => q.url);
-  assert(urls.every(u => u.startsWith('https://aiplatform.googleapis.com/v1/publishers/google/models/')), 'адрес Vertex: ' + urls[0]);
-  assert(urls[0].includes('/gemini-flash-latest:') && urls[1].includes('/gemini-3-flash:') && urls[2].includes('/gemini-3-flash:'), 'подбор модели: ' + urls.join(' '));
-  assert(geminiRequests[2].headers.get('x-goog-api-key') === 'AQ.vertex-test-key', 'ключ в заголовке');
+  const q = geminiRequests;
+  assert(q.every(x => x.url.startsWith('https://aiplatform.googleapis.com/v1/publishers/google/models/')), 'адрес Vertex: ' + q[0].url);
+  assert(q[0].url.includes('/gemini-flash-latest:') && q[0].url.includes('?key=AQ.vertex-test-key'), 'первая попытка — ключ в адресе: ' + q[0].url);
+  assert(q[1].headers.get('x-goog-api-key') === 'AQ.vertex-test-key' && !q[1].url.includes('?key='), 'вторая — в заголовке');
+  assert(q[2].headers.get('authorization') === 'Bearer AQ.vertex-test-key', 'третья — Bearer');
+  assert(q[3].url.includes('/gemini-3-flash:') && q[3].headers.get('x-goog-api-key'), 'вторая модель, без повторов неудачных способов: ' + q[3].url);
+  assert(q[4].url.includes('/gemini-3-flash:') && q[4].headers.get('x-goog-api-key') && !q[4].url.includes('?key='), 'ответ идёт найденным способом');
   assert(geminiScript.length === 0, 'не все ответы использованы');
 });
