@@ -9,6 +9,7 @@ const reply = (parts: Row[], finishReason = 'STOP') => ({ candidates: [{ content
 
 Deno.test('Gemini: договор → add_debt → ответ; платёж текстом; ошибки', async () => {
   Deno.env.set('GEMINI_API_KEY', 'gemini-test-key');
+  Deno.env.set('DEBTS_GEMINI_MODEL', 'gemini-flash-latest');
   Deno.env.delete('DEBTS_AI');
 
   // 1. Договор: Gemini вызывает add_debt (с подписью размышлений), потом отвечает текстом
@@ -67,5 +68,25 @@ Deno.test('Gemini: договор → add_debt → ответ; платёж те
   Deno.env.delete('ANTHROPIC_API_KEY');
   const none = await chat({ chatId: 42, me, text: 'привет', attachments: [] }).catch(e => e);
   assert(none instanceof AiError && none.kind === 'none', 'без ключа: ' + none);
+  assert(geminiScript.length === 0, 'не все ответы использованы');
+});
+
+Deno.test('Gemini: ключ Vertex AI (AQ.) и автоподбор модели', async () => {
+  Deno.env.set('GEMINI_API_KEY', 'AQ.vertex-test-key');
+  Deno.env.delete('DEBTS_GEMINI_MODEL');
+  Deno.env.delete('DEBTS_AI');
+  geminiRequests.length = 0;
+  // первая модель из списка не найдена, вторая отвечает; потом обычный ответ на сообщение
+  geminiScript.push(
+    { status: 404, body: '{"error":{"status":"NOT_FOUND","message":"model not found"}}' },
+    reply([{ text: 'ок' }]),
+    reply([{ text: 'Привет! Чем помочь?' }]),
+  );
+  const r = await chat({ chatId: 43, me: { id: '43', name: 'Маша' }, text: 'привет', attachments: [] });
+  assert(r.reply === 'Привет! Чем помочь?', 'ответ: ' + r.reply);
+  const urls = geminiRequests.map(q => q.url);
+  assert(urls.every(u => u.startsWith('https://aiplatform.googleapis.com/v1/publishers/google/models/')), 'адрес Vertex: ' + urls[0]);
+  assert(urls[0].includes('/gemini-flash-latest:') && urls[1].includes('/gemini-3-flash:') && urls[2].includes('/gemini-3-flash:'), 'подбор модели: ' + urls.join(' '));
+  assert(geminiRequests[2].headers.get('x-goog-api-key') === 'AQ.vertex-test-key', 'ключ в заголовке');
   assert(geminiScript.length === 0, 'не все ответы использованы');
 });

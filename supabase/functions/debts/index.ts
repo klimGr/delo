@@ -2,6 +2,7 @@
 //   POST /debts/webhook — обновления от Telegram
 //   POST /debts/cron    — ежедневные напоминания (pg_cron, заголовок x-cron-key)
 //   GET  /debts/setup?key=… — подключить вебхук, меню и команды бота (один раз после деплоя)
+//   GET  /debts/ai-check — проверить ключ ИИ и подобрать модель
 //   POST /debts         — API мини-приложения
 import { handleApi } from './api.ts';
 import { handleUpdate, type TgUpdate } from './bot.ts';
@@ -74,6 +75,14 @@ Deno.serve(async req => {
     if (route === 'setup') {
       if (!(await isServiceKey(url.searchParams.get('key') || req.headers.get('x-cron-key'), SECRET))) return json({ error: 'forbidden' }, 403);
       return json(await setup());
+    }
+
+    // Проверка ключа ИИ: какие модели отвечают (ключ не раскрывается)
+    if (route === 'ai-check') {
+      if (!(await isServiceKey(url.searchParams.get('key') || req.headers.get('x-cron-key'), SECRET))) return json({ error: 'forbidden' }, 403);
+      const { checkGemini, MODEL_CANDIDATES } = await import('./gemini.ts');
+      const models = url.searchParams.get('models')?.split(',').filter(Boolean) ?? MODEL_CANDIDATES;
+      return json(await checkGemini(models));
     }
 
     if (req.method === 'POST') {

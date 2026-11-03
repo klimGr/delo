@@ -103,7 +103,7 @@ globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => 
     const stop = content.some(b => (b as Row).type === 'tool_use') ? 'tool_use' : 'end_turn';
     return new Response(sse(content, stop), { headers: { 'content-type': 'text/event-stream' } });
   }
-  if (req.url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/')) {
+  if (req.url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/') || req.url.startsWith('https://aiplatform.googleapis.com/v1/publishers/google/models/')) {
     geminiRequests.push({ url: req.url, headers: req.headers, body: await req.json() });
     const next = geminiScript.shift();
     if (!next) throw new Error('Gemini вызван больше раз, чем ожидалось');

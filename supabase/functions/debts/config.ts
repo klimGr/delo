@@ -13,7 +13,8 @@ export const MODEL = env('DEBTS_MODEL', 'claude-opus-5-5');
 export const EFFORT = env('DEBTS_EFFORT', 'medium') as 'low' | 'medium' | 'high';
 // Ключи ИИ читаем при каждом вызове: какой задан, той моделью бот и отвечает
 export const GEMINI_API_KEY = () => env('GEMINI_API_KEY');
-export const GEMINI_MODEL = () => env('DEBTS_GEMINI_MODEL', 'gemini-flash-latest');
+// Пусто — бот сам подберёт первую рабочую модель из списка в gemini.ts
+export const GEMINI_MODEL = () => env('DEBTS_GEMINI_MODEL');
 export const ANTHROPIC_API_KEY = () => env('ANTHROPIC_API_KEY');
 export const SUPABASE_URL = env('SUPABASE_URL');
 export const SERVICE_KEY = env('SUPABASE_SERVICE_ROLE_KEY');

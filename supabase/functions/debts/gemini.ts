@@ -1,5 +1,8 @@
 // Модель Google Gemini через REST API (есть бесплатный тариф). Включается, если задан GEMINI_API_KEY.
-// Формат запросов сверен с официальным SDK @google/genai: generateContent, functionDeclarations
+// Подходят два вида ключей Google:
+//   • ключ Google AI Studio (AIza…) — Gemini API, generativelanguage.googleapis.com;
+//   • ключ Vertex AI в экспресс-режиме (AQ.…) — aiplatform.googleapis.com.
+// Формат запросов у них общий и сверен с официальным SDK @google/genai: generateContent, functionDeclarations
 // с parametersJsonSchema, ответы инструментов — functionResponse {id, name, response: {output|error}}.
 import { AiError, type RunArgs, runTool, SYSTEM, TOOLS } from './assistant.ts';
 import { GEMINI_API_KEY, GEMINI_MODEL } from './config.ts';
@@ -31,13 +34,24 @@ function errorFor(status: number, body: string): AiError {
   return new AiError('bad', body);
 }
 
+export const isVertexKey = (key: string) => key.startsWith('AQ.');
+
+/** Модели, которые пробуем по очереди, если DEBTS_GEMINI_MODEL не задан */
+export const MODEL_CANDIDATES = ['gemini-flash-latest', 'gemini-3-flash', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
+
+function endpoint(model: string, key: string) {
+  return isVertexKey(key)
+    ? `https://aiplatform.googleapis.com/v1/publishers/google/models/${model}:generateContent`
+    : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+}
+
 async function generate(contents: Content[]): Promise<GeminiResponse> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL()}:generateContent`;
+  const key = GEMINI_API_KEY();
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await fetch(endpoint(GEMINI_MODEL() || (await workingModel()), key), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY() },
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: SYSTEM }] },
         contents,
@@ -105,4 +119,56 @@ export async function runGemini({ history, context, attachments, userText, ctx }
     contents.push({ role: 'user', parts: responses });
   }
   return '';
+}
+
+/* ---------- подбор модели и проверка ключа ---------- */
+let found = '';
+
+/** Первая модель из списка, которая отвечает с этим ключом (запоминаем до перезапуска функции) */
+async function workingModel() {
+  if (found) return found;
+  const check = await checkGemini(MODEL_CANDIDATES);
+  const ok = check.results.find(r => r.status === 200);
+  if (!ok) {
+    const last = check.results.at(-1);
+    throw errorFor(last?.status ?? 500, last?.message ?? 'нет ответа');
+  }
+  found = ok.model;
+  return found;
+}
+
+/** Пробный запрос к каждой модели по очереди — для /ai-check и подбора модели. Ключ не раскрывается */
+export async function checkGemini(models: string[]) {
+  const key = GEMINI_API_KEY();
+  const results: { model: string; status: number; message: string }[] = [];
+  for (const model of models) {
+    let status = 0;
+    let message = '';
+    try {
+      const res = await fetch(endpoint(model, key), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: 'Отвечай одним словом.' }] },
+          contents: [{ role: 'user', parts: [{ text: 'Скажи «ок».' }] }],
+          tools: [{ functionDeclarations: declarations }],
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      status = res.status;
+      const body = await res.text();
+      if (res.ok) {
+        const parsed = JSON.parse(body) as GeminiResponse;
+        message = (parsed.candidates?.[0]?.content?.parts ?? []).map(p => p.text ?? '').join('').slice(0, 40);
+      } else {
+        const err = parseJson(body)?.error ?? {};
+        message = `${err.status ?? ''} ${err.message ?? body}`.slice(0, 300);
+      }
+    } catch (e) {
+      message = String(e).slice(0, 200);
+    }
+    results.push({ model, status, message });
+    if (status === 200) break;
+  }
+  return { vertex: isVertexKey(key), keyLength: key.length, results };
 }
