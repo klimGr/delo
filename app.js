@@ -80,6 +80,7 @@ function monthName(key) {
 
 function fmtDate(str) {
   const d = new Date(str);
+  if (Number.isNaN(d.getTime())) return 'Без даты';
   const now = new Date();
   const day0 = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const diff = Math.round((day0(d) - day0(now)) / 864e5);
@@ -219,7 +220,7 @@ const plannedOrders = () => orders.filter(o => o.status === 'planned').sort((a, 
 
 // Заказ «в одного» целиком того, кто его делал; иначе делим по тому, кто нашёл
 function splitOf(o) {
-  if (o.solo) return { ivan: o.finder === 'ivan' ? 1 : 0, klim: o.finder === 'klim' ? 1 : 0, label: '100%' };
+  if (o.solo) return o.finder === 'ivan' ? { ivan: 1, klim: 0, label: '100%' } : { ivan: 0, klim: 1, label: '100%' };
   return SPLIT[o.finder] || SPLIT.klim;
 }
 
@@ -271,7 +272,14 @@ async function flush() {
   flushing = true;
   try {
     while (queue.length) {
-      await api(queue[0]);
+      try {
+        await api(queue[0]);
+      } catch (e) {
+        // Сервер отверг запрос насовсем (кривые данные) — выбрасываем, иначе очередь встанет навсегда.
+        // Нет сети, сбой сервера или нет доступа — оставляем и повторим позже.
+        const permanent = e.status >= 400 && e.status < 500 && e.status !== 401 && e.status !== 403;
+        if (!permanent) throw e;
+      }
       queue.shift();
       writeJSON(QUEUE_KEY, queue);
     }
@@ -289,12 +297,15 @@ async function pull() {
   if (queue.length) return; // не всё отправлено — не затираем свои правки
   try {
     const res = await api({ action: 'list' });
+    if (queue.length || noteDirty) return; // пока ждали ответ, появились свои правки — они важнее
     orders = res.orders.filter(r => r.type !== 'note');
     notes = res.orders.filter(r => r.type === 'note');
     saveOrders();
     saveNotes();
+    // не перерисовываем под пальцами: в форме, заметке или пока печатают в поиске
     const top = state.stack[state.stack.length - 1];
-    if (!top || !['edit', 'complete', 'note'].includes(top.type)) render();
+    const typing = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
+    if (!typing && (!top || !['edit', 'complete', 'note'].includes(top.type))) render();
   } catch (e) {
     syncError(e);
   }
