@@ -6,7 +6,7 @@
 //   POST /debts         — API мини-приложения
 import { handleApi } from './api.ts';
 import { handleUpdate, type TgUpdate } from './bot.ts';
-import { APP_URL, BOT_TOKEN, SECRET, SUPABASE_URL } from './config.ts';
+import { APP_URL, BOT_TOKEN, GEMINI_API_KEY, SECRET, SUPABASE_URL } from './config.ts';
 import { isServiceKey } from './db.ts';
 import { runReminders } from './reminders.ts';
 import { tg } from './telegram.ts';
@@ -81,8 +81,13 @@ Deno.serve(async req => {
     if (route === 'ai-check') {
       if (!(await isServiceKey(url.searchParams.get('key') || req.headers.get('x-cron-key'), SECRET))) return json({ error: 'forbidden' }, 403);
       const { checkGemini, MODEL_CANDIDATES } = await import('./gemini.ts');
+      const { checkGroq } = await import('./groq.ts');
       const models = url.searchParams.get('models')?.split(',').filter(Boolean) ?? MODEL_CANDIDATES;
-      return json(await checkGemini(models));
+      const [gemini, groq] = await Promise.all([
+        GEMINI_API_KEY() ? checkGemini(models) : { configured: false },
+        checkGroq(),
+      ]);
+      return json({ gemini, groq });
     }
 
     if (req.method === 'POST') {

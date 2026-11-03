@@ -11,6 +11,9 @@ Deno.test('Gemini: договор → add_debt → ответ; платёж те
   Deno.env.set('GEMINI_API_KEY', 'gemini-test-key');
   Deno.env.set('DEBTS_GEMINI_MODEL', 'gemini-flash-latest');
   Deno.env.delete('DEBTS_AI');
+  // только Gemini: без запасных ИИ, чтобы ошибки доходили до проверки
+  Deno.env.delete('ANTHROPIC_API_KEY');
+  Deno.env.delete('GROQ_API_KEY');
 
   // 1. Договор: Gemini вызывает add_debt (с подписью размышлений), потом отвечает текстом
   geminiScript.push(

@@ -16,6 +16,8 @@ export const GEMINI_API_KEY = () => env('GEMINI_API_KEY');
 // Пусто — бот сам подберёт первую рабочую модель из списка в gemini.ts
 export const GEMINI_MODEL = () => env('DEBTS_GEMINI_MODEL');
 export const ANTHROPIC_API_KEY = () => env('ANTHROPIC_API_KEY');
+// Ключ Groq — общий с ботом «Плинтуса»
+export const GROQ_API_KEY = () => env('GROQ_API_KEY');
 export const SUPABASE_URL = env('SUPABASE_URL');
 export const SERVICE_KEY = env('SUPABASE_SERVICE_ROLE_KEY');
 
