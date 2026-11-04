@@ -318,7 +318,7 @@ textarea {
 .table .total th, .table .total td { font-weight: 700; }
 
 /* ---------- полный экран Telegram ---------- */
-:root { --top: calc(var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px)); }
+:root { --top: calc(var(--tg-safe-area-inset-top, env(safe-area-inset-top, 0px)) + var(--tg-content-safe-area-inset-top, 0px)); }
 #app { padding-top: calc(8px + var(--top)); }
 .navbar { margin-top: calc(-8px - var(--top)); padding-top: var(--top); height: calc(44px + var(--top)); }
 
@@ -410,3 +410,8 @@ textarea {
 }
 .pill-btn svg { width: 18px; height: 18px; }
 .pill-btn:active { opacity: .75; }
+
+/* ---------- подсказка «поставить на экран» ---------- */
+.install-help { font-size: 15px; line-height: 1.4; }
+.install-help b { display: block; margin-bottom: 6px; }
+.install-help p { color: var(--text2); margin-top: 4px; }
