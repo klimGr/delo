@@ -24,8 +24,11 @@ self.addEventListener('activate', event => {
 
 async function networkFirst(request) {
   const cache = await caches.open(CACHE);
+  // Telegram добавляет к адресу свои параметры — храним одну копию без них
+  const url = new URL(request.url);
+  const key = url.origin === location.origin ? url.origin + url.pathname : request;
   const fromNetwork = fetch(request).then(res => {
-    if (res.ok || res.type === 'opaque') cache.put(request, res.clone());
+    if (res.ok || res.type === 'opaque') cache.put(key, res.clone());
     return res;
   });
   const timeout = new Promise(resolve => setTimeout(resolve, NETWORK_WAIT));
