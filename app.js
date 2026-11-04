@@ -13,6 +13,17 @@ const remote = !!(API_URL && inTelegram);
 
 /* ---------- справочники ---------- */
 const PEOPLE = { ivan: 'Иван', klim: 'Клим' };
+const PEOPLE_DAT = { ivan: 'Ивану', klim: 'Климу' };
+const PEOPLE_GEN = { ivan: 'Ивана', klim: 'Клима' };
+
+// Кто я. Вне Telegram (демо-режим) — Клим.
+const ME_BY_ID = { '2069935414': 'klim', '348419449': 'ivan' };
+const myKey = ME_BY_ID[String(tg?.initDataUnsafe?.user?.id)] ?? 'klim';
+const partnerKey = myKey === 'ivan' ? 'klim' : 'ivan';
+// Заказ или заметка — личные у создателя; галочка «общий» показывает их напарнику.
+// У старых записей без хозяина хозяин — Клим.
+const ownerOf = o => (o.owner === 'ivan' ? 'ivan' : 'klim');
+const isMine = o => ownerOf(o) === myKey;
 // Кто нашёл заказ → как делим деньги
 const SPLIT = {
   ivan: { ivan: 0.65, klim: 0.35, label: '65 / 35' },
@@ -39,6 +50,7 @@ const ICON = {
   clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
   pin: svg('<path d="M12 21s-7-6.1-7-11.5a7 7 0 0 1 14 0C19 14.9 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>'),
   check: svg('<path d="m5 12 5 5L20 7"/>'),
+  phone: svg('<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/>'),
   note: svg('<rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h8M8 12h8M8 16h5"/>'),
   search: svg('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>'),
   camera: svg('<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>'),
@@ -135,10 +147,11 @@ function seedOrders() {
     return toLocalInput(d);
   };
   const vol = (plinth = 0, molding = 0, panels = 0) => ({ plinth, molding, panels });
-  const planned = (date, finder, address, client, phone, plan, notes = '') =>
-    ({ id: uid(), status: 'planned', date, finder, address, client, phone, plan, notes });
-  const done = (date, finder, address, client, phone, fact, earned, comment = '') =>
-    ({ id: uid(), status: 'done', date, finder, address, client, phone, plan: fact, fact, earned, comment, notes: '' });
+  // в демо заказы Ивана — общие (иначе Клим бы их не видел), часть Климовых тоже общие
+  const planned = (date, owner, address, client, phone, plan, notes = '') =>
+    ({ id: uid(), status: 'planned', date, owner, shared: owner === 'ivan', address, client, phone, plan, notes });
+  const done = (date, owner, address, client, phone, fact, earned, comment = '') =>
+    ({ id: uid(), status: 'done', date, owner, shared: owner === 'ivan', address, client, phone, plan: fact, fact, earned, comment, notes: '' });
 
   return [
     planned(at(1, 10), 'ivan', 'ул. Ленина, 12, кв. 48', 'Ольга', '+7 900 123-45-67', vol(32, 10), 'Домофон 48В. 5 этаж, лифт только до 4-го.'),
@@ -147,7 +160,7 @@ function seedOrders() {
     done(at(-1, 10), 'ivan', 'ул. Гагарина, 25, кв. 9', 'Сергей', '+7 903 410-22-33', vol(42, 12), 14800, 'Углы кривые, ушло больше клея.'),
     done(at(-9, 9), 'klim', 'ул. Пушкина, 40, кв. 3', 'Марина', '+7 915 200-30-40', vol(38, 0, 18), 23400),
     done(at(-16, 12), 'ivan', 'Набережная, 5, кв. 71', 'Виктор', '+7 999 111-00-22', vol(56, 20), 19200),
-    { ...done(at(-24, 10), 'klim', 'ул. Чехова, 14', 'Ирина', '+7 905 777-88-99', vol(0, 34, 9), 15600), solo: true },
+    { ...done(at(-24, 10), 'klim', 'ул. Чехова, 14', 'Ирина', '+7 905 777-88-99', vol(0, 34, 9), 15600), shared: true },
     done(at(-38, 9), 'ivan', 'ул. Кирова, 2, кв. 15', 'Павел', '+7 916 321-54-76', vol(64, 0, 22), 31000),
     done(at(-55, 10), 'klim', 'ул. Советская, 88, кв. 4', 'Елена', '+7 917 654-32-10', vol(48, 16), 18500),
   ];
@@ -158,16 +171,16 @@ let queue = remote ? readJSON(QUEUE_KEY) || [] : [];
 saveOrders();
 
 // Общие заметки. На сервере лежат в той же таблице, что и заказы, с type: 'note'
-const me = tg?.initDataUnsafe?.user?.first_name || '';
+const me = PEOPLE[myKey];
 let notes = readJSON(NOTES_KEY) || (remote ? [] : seedNotes());
 saveNotes();
 
 function seedNotes() {
   const ago = h => Date.now() - h * 3600e3;
   return [
-    { id: uid(), type: 'note', text: 'Купить\nКлей монтажный — 6 шт\nСаморезы 3,5×35\nДиски для торцовки', updatedAt: ago(2), by: 'Иван' },
-    { id: uid(), type: 'note', text: 'Цены 2026\nПлинтус — 350 ₽/м\nМолдинг — 400 ₽/м\nПанели — 900 ₽/м²', updatedAt: ago(30), by: 'Клим' },
-    { id: uid(), type: 'note', text: 'Леруа на Кирова\nПо четвергам скидка на клей', updatedAt: ago(200), by: 'Клим' },
+    { id: uid(), type: 'note', text: 'Купить\nКлей монтажный — 6 шт\nСаморезы 3,5×35\nДиски для торцовки', updatedAt: ago(2), by: 'Иван', owner: 'ivan', shared: true },
+    { id: uid(), type: 'note', text: 'Цены 2026\nПлинтус — 350 ₽/м\nМолдинг — 400 ₽/м\nПанели — 900 ₽/м²', updatedAt: ago(30), by: 'Клим', owner: 'klim', shared: true },
+    { id: uid(), type: 'note', text: 'Леруа на Кирова\nПо четвергам скидка на клей', updatedAt: ago(200), by: 'Клим', owner: 'klim', shared: false },
   ];
 }
 
@@ -218,14 +231,15 @@ const findOrder = id => orders.find(o => o.id === id);
 const doneOrders = () => orders.filter(o => o.status === 'done');
 const plannedOrders = () => orders.filter(o => o.status === 'planned').sort((a, b) => a.date.localeCompare(b.date));
 
-// Заказ «в одного» целиком того, кто его делал; иначе делим по тому, кто нашёл
+// Личный заказ — целиком его создателя. Общий делим по тому, кто его создал (нашёл).
 function splitOf(o) {
-  if (o.solo) return o.finder === 'ivan' ? { ivan: 1, klim: 0, label: '100%' } : { ivan: 0, klim: 1, label: '100%' };
-  return SPLIT[o.finder] || SPLIT.klim;
+  const owner = ownerOf(o);
+  if (!o.shared) return owner === 'ivan' ? { ivan: 1, klim: 0, label: '100%' } : { ivan: 0, klim: 1, label: '100%' };
+  return SPLIT[owner];
 }
 
-const MODES = [['team', 'Вдвоём'], ['ivan', 'Иван один'], ['klim', 'Клим один']];
-const modeOf = o => (o.solo ? o.finder : 'team');
+const MODES = [['personal', 'Личные'], ['shared', 'Общие']];
+const modeOf = o => (o.shared ? 'shared' : 'personal');
 
 function shares(o) {
   const s = splitOf(o);
@@ -233,14 +247,19 @@ function shares(o) {
   return { ivan: e * s.ivan, klim: e * s.klim };
 }
 
+// Метры общего заказа идут в зачёт обоим, деньги — только своя доля
 function totals(list) {
-  const t = { plinth: 0, molding: 0, panels: 0, earned: 0, ivan: 0, klim: 0 };
+  const t = { plinth: 0, molding: 0, panels: 0, mine: 0, personal: 0, sharedMine: 0, partner: 0 };
   for (const o of list) {
     for (const k of KINDS) t[k.key] += o.fact?.[k.key] || 0;
     const s = shares(o);
-    t.earned += o.earned || 0;
-    t.ivan += s.ivan;
-    t.klim += s.klim;
+    t.mine += s[myKey];
+    if (o.shared) {
+      t.sharedMine += s[myKey];
+      t.partner += s[partnerKey];
+    } else {
+      t.personal += s[myKey];
+    }
   }
   return t;
 }
@@ -290,8 +309,15 @@ async function flush() {
   }
 }
 
+let offlineShown = false;
 async function pull() {
   if (!remote) return;
+  if (!navigator.onLine) {
+    if (!offlineShown) toast('Нет интернета — показываю сохранённое');
+    offlineShown = true;
+    return;
+  }
+  offlineShown = false;
   commitNote();
   await flush();
   if (queue.length) return; // не всё отправлено — не затираем свои правки
@@ -514,35 +540,41 @@ const textBlock = (title, text) =>
 const emptyState = (title, text) =>
   `<div class="empty"><div class="empty-title">${title}</div><p>${text}</p></div>`;
 
-const personLine = (p, v) =>
-  `<div class="person"><span class="dot ${p}"></span><span>${PEOPLE[p]}</span><b>${money(v)}</b></div>`;
+const legendLine = (cls, label, v) =>
+  `<div class="person"><span class="dot ${cls}"></span><span>${label}</span><b>${money(v)}</b></div>`;
 
-function splitPreview(finder, earned, solo) {
-  const s = splitOf({ finder, solo });
+// Пометка в списках: общий заказ или заметка, и чей
+const shareTag = o => (o.shared ? `<span class="tag">${isMine(o) ? 'Общий' : `От ${PEOPLE_GEN[ownerOf(o)]}`}</span>` : '');
+
+function splitPreview(owner, earned, shared) {
+  const s = splitOf({ owner, shared });
   const e = parseNum(earned);
-  const who = PEOPLE[finder] || PEOPLE.klim;
+  if (!shared) return `<div><span class="dot personal"></span>Личный заказ — всё тебе<b>${money(e)}</b></div>`;
   return `
     <div><span class="dot ivan"></span>Иван · ${Math.round(s.ivan * 100)}%<b>${money(e * s.ivan)}</b></div>
     <div><span class="dot klim"></span>Клим · ${Math.round(s.klim * 100)}%<b>${money(e * s.klim)}</b></div>
-    <p>${solo ? `${who} делал один — всё ему` : `Заказ нашёл ${who}, делим ${s.label}`}</p>`;
+    <p>Заказ нашёл ${PEOPLE[owner]}, делим ${s.label}</p>`;
 }
 
-// Кто нашёл заказ + переключатель «делал один»
-function finderBlock(finder, solo) {
+const shareHint = shared =>
+  (shared ? `Видно ${PEOPLE_DAT[partnerKey]}, делим ${SPLIT[myKey].label}, метры в зачёт обоим` : 'Видишь только ты, все деньги твои');
+
+// Галочка «С напарником». Её ставит и снимает только тот, кто создал заказ.
+function shareBlock(o) {
+  if (o && !isMine(o)) {
+    return `
+      <h2 class="section-title">Общий заказ</h2>
+      <div class="list">${infoRow('Нашёл', `${PEOPLE[ownerOf(o)]} · ${SPLIT[ownerOf(o)].label}`)}</div>`;
+  }
+  const shared = !!o?.shared;
   return `
-    <h2 class="section-title" id="finder-title">${solo ? 'Кто делал' : 'Кто нашёл заказ'}</h2>
-    <div class="segmented">
-      ${['ivan', 'klim'].map(p => `
-        <label><input type="radio" name="finder" value="${p}" ${finder === p ? 'checked' : ''}>
-        <span>${PEOPLE[p]}<small data-split="${p}">${solo ? '100%' : SPLIT[p].label}</small></span></label>`).join('')}
-    </div>
-    <label class="toggle-row">
-      <span><b>Делал один</b><small>Все деньги — тому, кто выбран выше</small></span>
-      <input type="checkbox" name="solo" ${solo ? 'checked' : ''}><i></i>
+    <label class="toggle-row share-row">
+      <span><b>С напарником</b><small id="share-hint">${shareHint(shared)}</small></span>
+      <input type="checkbox" name="shared" ${shared ? 'checked' : ''}><i></i>
     </label>`;
 }
 
-// Таблица «вдвоём / в одного» за месяц и за всё время
+// Таблица «личные / общие» за месяц и за всё время
 function modeTable(cell) {
   const all = doneOrders();
   const cur = currentMonth();
@@ -552,7 +584,7 @@ function modeTable(cell) {
     return `<tr><th>${label}</th><td>${cell(m)}</td><td>${cell(a)}</td></tr>`;
   }).join('');
   return `
-    <h2 class="section-title">Вдвоём и в одного</h2>
+    <h2 class="section-title">Личные и общие</h2>
     <div class="card">
       <table class="table">
         <thead><tr><th></th><th>Этот месяц</th><th>Всё время</th></tr></thead>
@@ -574,13 +606,13 @@ function dateHint(date, selfId) {
 function orderRow(o) {
   const isDone = o.status === 'done';
   const side = isDone
-    ? `<b>${money(o.earned)}</b><span>${esc(volumeShort(o.fact, false))}</span>`
+    ? `<b>${money(shares(o)[myKey])}</b><span>${esc(volumeShort(o.fact, false))}</span>`
     : `<span>${esc(volumeShort(o.plan))}</span>`;
   return `
     <button class="row" data-go="order" data-id="${o.id}">
       <div class="row-main">
         <div class="row-title">${esc(o.address)}</div>
-        <div class="row-sub">${o.solo ? `<span class="solo-tag">${PEOPLE[o.finder]} один</span>` : ''}${esc(fmtDate(o.date))}${o.client ? ' · ' + esc(o.client) : ''}</div>
+        <div class="row-sub">${shareTag(o)}${esc(fmtDate(o.date))}${o.client ? ' · ' + esc(o.client) : ''}</div>
       </div>
       <div class="row-side">${side}</div>
       ${ICON.chevron}
@@ -591,12 +623,13 @@ function nextCard(o) {
   const who = [o.client, o.phone].filter(Boolean).join(' · ');
   return `
     <div class="card next tap" data-go="order" data-id="${o.id}">
-      <div class="next-top"><span>${esc(fmtDate(o.date))}</span><span>${esc(volumeShort(o.plan))}</span></div>
+      <div class="next-top"><span>${esc(fmtDate(o.date))}${o.shared ? ` · ${isMine(o) ? 'общий' : `от ${PEOPLE_GEN[ownerOf(o)]}`}` : ''}</span><span>${esc(volumeShort(o.plan))}</span></div>
       <div class="next-address">${esc(o.address)}</div>
       ${who ? `<div class="next-client">${esc(who)}</div>` : ''}
       ${o.notes ? `<div class="next-note">${esc(o.notes)}</div>` : ''}
       <div class="next-actions">
         <button class="chip" data-action="map" data-id="${o.id}">${ICON.pin}Маршрут</button>
+        ${isMine(o) && o.phone ? `<a class="chip" href="${telHref(o.phone)}">${ICON.phone}Позвонить</a>` : ''}
       </div>
     </div>`;
 }
@@ -643,10 +676,10 @@ function renderHome() {
 
     <button class="card tap" data-go="money">
       <div class="card-head"><span>Заработано за ${MONTHS[now.getMonth()].toLowerCase()}</span>${ICON.chevron}</div>
-      <div class="big">${money(m.earned)}</div>
-      ${m.earned ? `<div class="bar"><i style="width:${(m.ivan / m.earned * 100).toFixed(1)}%"></i></div>` : '<div style="height:12px"></div>'}
-      <div class="people">${personLine('ivan', m.ivan)}${personLine('klim', m.klim)}</div>
-      <div class="card-foot">За всё время ${money(a.earned)}</div>
+      <div class="big">${money(m.mine)}</div>
+      ${m.mine ? `<div class="bar"><i style="width:${(m.personal / m.mine * 100).toFixed(1)}%"></i></div>` : '<div style="height:12px"></div>'}
+      <div class="people">${legendLine('personal', 'Личные заказы', m.personal)}${legendLine('shared', 'Общие, моя доля', m.sharedMine)}</div>
+      <div class="card-foot">За всё время ${money(a.mine)}</div>
     </button>
 
     <button class="card tap" data-go="stats">
@@ -731,7 +764,7 @@ function historyList() {
   return groups.map(([key, items]) => `
     <div class="section-head">
       <h2 class="section-title">${monthName(key)}</h2>
-      <span>${money(totals(items).earned)}</span>
+      <span>${money(totals(items).mine)}</span>
     </div>
     <div class="list">${items.map(orderRow).join('')}</div>`).join('');
 }
@@ -756,11 +789,11 @@ function renderNotes() {
         <button class="row" data-go="note" data-id="${n.id}">
           <div class="row-main">
             <div class="row-title note-title">${esc(title)}</div>
-            <div class="row-sub"><span class="note-time">${fmtAgo(n.updatedAt)}</span>${esc(preview || 'Нет текста')}</div>
+            <div class="row-sub">${shareTag(n).replace('Общий', 'Общая')}<span class="note-time">${fmtAgo(n.updatedAt)}</span>${esc(preview || 'Нет текста')}</div>
           </div>
         </button>`;
     }).join('')}</div>`
-      : emptyState('Заметок нет', 'Общие записи на двоих: что купить, цены, контакты.')}
+      : emptyState('Заметок нет', 'Что купить, цены, контакты. Галочкой можно показать заметку напарнику.')}
     <button class="btn primary" data-action="new-note">${ICON.plus}Новая заметка</button>`;
 }
 
@@ -789,6 +822,7 @@ function renderOrder({ id }) {
   const isDone = o.status === 'done';
   const vols = (isDone ? o.fact : o.plan) || {};
   const s = shares(o);
+  const mine = isMine(o);
 
   return `
     ${navBar('', `<button class="nav-link" data-go="edit" data-id="${o.id}">Изменить</button>`)}
@@ -800,15 +834,14 @@ function renderOrder({ id }) {
 
     <div class="actions">
       <button class="action" data-action="map" data-id="${o.id}">${ICON.pin}<span>Маршрут</span></button>
+      ${mine && o.phone ? `<a class="action" href="${telHref(o.phone)}">${ICON.phone}<span>Позвонить</span></a>` : ''}
     </div>
 
     <h2 class="section-title">Клиент</h2>
     <div class="list">
       ${infoRow('Имя', esc(o.client) || '—')}
-      ${o.phone ? infoRow('Телефон', `<a href="${telHref(o.phone)}">${esc(o.phone)}</a>`) : ''}
-      ${o.solo
-        ? infoRow('Делал', `${PEOPLE[o.finder]} один · 100%`)
-        : infoRow('Нашёл заказ', `${PEOPLE[o.finder]} · ${SPLIT[o.finder].label}`)}
+      ${o.phone ? infoRow('Телефон', mine ? `<a href="${telHref(o.phone)}">${esc(o.phone)}</a>` : esc(o.phone)) : ''}
+      ${infoRow('Заказ', o.shared ? `Общий · нашёл ${PEOPLE[ownerOf(o)]} · ${SPLIT[ownerOf(o)].label}` : 'Личный')}
     </div>
 
     ${o.notes ? textBlock('Заметки', o.notes) : ''}
@@ -822,15 +855,16 @@ function renderOrder({ id }) {
       <h2 class="section-title">Деньги</h2>
       <div class="list">
         ${infoRow('Заработано', `<b>${money(o.earned)}</b>`)}
-        ${infoRow('<span class="dot ivan"></span>Иван', money(s.ivan))}
-        ${infoRow('<span class="dot klim"></span>Клим', money(s.klim))}
+        ${o.shared ? `
+          ${infoRow('<span class="dot ivan"></span>Иван', money(s.ivan))}
+          ${infoRow('<span class="dot klim"></span>Клим', money(s.klim))}` : ''}
       </div>
       ${o.comment ? textBlock('Комментарий', o.comment) : ''}` : ''}
 
     ${photoGrid(o)}
 
     ${!isDone ? `<button class="btn primary" data-go="complete" data-id="${o.id}">${ICON.check}Заказ выполнен</button>` : ''}
-    <button class="btn plain danger" data-action="delete" data-id="${o.id}">Удалить заказ</button>`;
+    ${mine ? `<button class="btn plain danger" data-action="delete" data-id="${o.id}">Удалить заказ</button>` : ''}`;
 }
 
 function renderPhoto({ id, idx }) {
@@ -855,11 +889,11 @@ function renderEdit({ id, day }) {
   if (id && !o) return notFound();
   const isDone = o?.status === 'done';
   const vols = (isDone ? o.fact : o?.plan) || {};
-  const finder = o?.finder || 'klim';
+  const owner = o ? ownerOf(o) : myKey;
   const date = o?.date || defaultDate(day);
 
   return `
-    <form data-form="edit" data-id="${o ? o.id : ''}" autocomplete="off">
+    <form data-form="edit" data-id="${o ? o.id : ''}" data-owner="${owner}" data-shared="${o?.shared ? 1 : 0}" autocomplete="off">
       ${navBar(o ? 'Изменить' : 'Новый заказ', '<button class="nav-link strong" type="submit">Готово</button>')}
 
       <h2 class="section-title">Объект</h2>
@@ -875,7 +909,7 @@ function renderEdit({ id, day }) {
         ${field('Телефон', `<input name="phone" type="tel" inputmode="tel" placeholder="+7 900 123-45-67" value="${esc(o?.phone)}">`)}
       </div>
 
-      ${finderBlock(finder, !!o?.solo)}
+      ${shareBlock(o)}
 
       <h2 class="section-title">${isDone ? 'Уложено' : 'Объём, примерно'}</h2>
       <div class="list">${KINDS.map(k => numField(k, vols[k.key])).join('')}</div>
@@ -883,7 +917,7 @@ function renderEdit({ id, day }) {
       ${isDone ? `
         <h2 class="section-title">Заработано</h2>
         <div class="list">${field('Сумма', `<input name="earned" inputmode="decimal" placeholder="0" value="${o.earned || ''}"><em>₽</em>`, 'num')}</div>
-        <div class="split-preview" id="split-preview">${splitPreview(finder, o.earned, o.solo)}</div>
+        <div class="split-preview" id="split-preview">${splitPreview(owner, o.earned, o.shared)}</div>
         ${textareaBlock('Комментарий', 'comment', o.comment, 'Как прошло, что учесть')}` : ''}
 
       ${textareaBlock('Заметки', 'notes', o?.notes, 'Код домофона, этаж, парковка…')}
@@ -898,7 +932,7 @@ function renderComplete({ id }) {
   const vols = o.fact || o.plan || {};
 
   return `
-    <form data-form="complete" data-id="${o.id}" autocomplete="off">
+    <form data-form="complete" data-id="${o.id}" data-owner="${ownerOf(o)}" data-shared="${o.shared ? 1 : 0}" autocomplete="off">
       ${navBar('Заказ выполнен', '<button class="nav-link strong" type="submit">Готово</button>')}
       <div class="caption center" style="padding-top:8px">${esc(o.address)}</div>
 
@@ -907,9 +941,9 @@ function renderComplete({ id }) {
 
       <h2 class="section-title">Сколько заработали</h2>
       <div class="list">${field('Сумма', `<input name="earned" inputmode="decimal" placeholder="0" required value="${o.earned || ''}"><em>₽</em>`, 'num')}</div>
-      <div class="split-preview" id="split-preview">${splitPreview(o.finder, o.earned, o.solo)}</div>
+      <div class="split-preview" id="split-preview">${splitPreview(ownerOf(o), o.earned, o.shared)}</div>
 
-      ${finderBlock(o.finder, !!o.solo)}
+      ${shareBlock(o)}
 
       ${textareaBlock('Комментарий', 'comment', o.comment, 'Как прошло, что учесть на будущее')}
 
@@ -962,7 +996,7 @@ function renderMoney() {
   const m = totals(all.filter(o => monthKey(o.date) === currentMonth()));
   const a = totals(all);
   const groups = groupByMonth(all);
-  const row = (label, key) => `<tr><th>${label}</th><td>${money(m[key])}</td><td>${money(a[key])}</td></tr>`;
+  const row = (label, key, cls = '') => `<tr class="${cls}"><th>${label}</th><td>${money(m[key])}</td><td>${money(a[key])}</td></tr>`;
 
   return `
     ${navBar('Заработано')}
@@ -970,14 +1004,13 @@ function renderMoney() {
       <table class="table">
         <thead><tr><th></th><th>Этот месяц</th><th>Всё время</th></tr></thead>
         <tbody>
-          <tr class="total"><th>Всего</th><td>${money(m.earned)}</td><td>${money(a.earned)}</td></tr>
-          ${row('<span class="dot ivan"></span> Иван', 'ivan')}
-          ${row('<span class="dot klim"></span> Клим', 'klim')}
+          ${row('Мой заработок', 'mine', 'total')}
+          ${row('<span class="dot personal"></span> Личные заказы', 'personal')}
+          ${row('<span class="dot shared"></span> Общие, моя доля', 'sharedMine')}
+          ${row(`${PEOPLE_DAT[partnerKey]} по общим`, 'partner', 'muted')}
         </tbody>
       </table>
     </div>
-
-    ${modeTable(list => `${money(totals(list).earned)}${ordersCount(list)}`)}
 
     ${groups.length ? `
       <h2 class="section-title">По месяцам</h2>
@@ -988,9 +1021,9 @@ function renderMoney() {
             <div class="row">
               <div class="row-main">
                 <div class="row-title">${monthName(key)}</div>
-                <div class="row-sub">Иван ${money(t.ivan)} · Клим ${money(t.klim)}</div>
+                <div class="row-sub">Личные ${money(t.personal)} · общие ${money(t.sharedMine)}</div>
               </div>
-              <div class="row-side"><b>${money(t.earned)}</b><span>${list.length} ${plural(list.length, 'заказ', 'заказа', 'заказов')}</span></div>
+              <div class="row-side"><b>${money(t.mine)}</b><span>${list.length} ${plural(list.length, 'заказ', 'заказа', 'заказов')}</span></div>
             </div>`;
         }).join('')}
       </div>` : ''}`;
@@ -1000,9 +1033,15 @@ function renderNote({ id }) {
   const n = findNote(id);
   if (!n) return navBar('') + emptyState('Заметка не найдена', 'Возможно, её удалили.');
   const meta = [n.by, fmtAgo(n.updatedAt)].filter(Boolean).join(' · ');
+  const mine = isMine(n);
   return `
-    ${navBar('', `<button class="nav-link danger" data-action="delete-note" data-id="${n.id}">Удалить</button>`)}
+    ${navBar('', mine ? `<button class="nav-link danger" data-action="delete-note" data-id="${n.id}">Удалить</button>` : '')}
     <div class="note-meta" id="note-meta">${esc(meta)}</div>
+    ${mine ? `
+      <label class="toggle-row note-share">
+        <span><b>Видно напарнику</b><small>${PEOPLE[partnerKey]} увидит и сможет дописать</small></span>
+        <input type="checkbox" data-note-share="${n.id}" ${n.shared ? 'checked' : ''}><i></i>
+      </label>` : `<div class="note-meta">Заметка ${PEOPLE_GEN[ownerOf(n)]}, видна вам обоим</div>`}
     <textarea class="note-editor" data-note="${n.id}" placeholder="Первая строка станет заголовком">${esc(n.text)}</textarea>`;
 }
 
@@ -1023,13 +1062,12 @@ function readKinds(fd) {
 
 function saveEdit(id, fd) {
   const existing = id ? findOrder(id) : null;
-  const o = existing || { id: uid(), status: 'planned', createdAt: Date.now() };
+  const o = existing || { id: uid(), status: 'planned', createdAt: Date.now(), owner: myKey };
   o.address = String(fd.get('address')).trim();
   o.date = fd.get('date');
   o.client = String(fd.get('client') || '').trim();
   o.phone = String(fd.get('phone') || '').trim();
-  o.finder = fd.get('finder') || 'klim';
-  o.solo = fd.get('solo') === 'on';
+  if (isMine(o)) o.shared = fd.get('shared') === 'on';
   o.notes = String(fd.get('notes') || '').trim();
   if (o.status === 'done') {
     o.fact = readKinds(fd);
@@ -1049,8 +1087,7 @@ function saveComplete(id, fd) {
   const o = findOrder(id);
   if (!o) return back();
   o.status = 'done';
-  o.finder = fd.get('finder') || o.finder;
-  o.solo = fd.get('solo') === 'on';
+  if (isMine(o)) o.shared = fd.get('shared') === 'on';
   o.fact = readKinds(fd);
   o.earned = parseNum(fd.get('earned'));
   o.comment = String(fd.get('comment') || '').trim();
@@ -1087,7 +1124,7 @@ function handleAction(action, id, data) {
     return render();
   }
   if (action === 'new-note') {
-    const n = { id: uid(), type: 'note', text: '', updatedAt: Date.now(), by: me, saved: false };
+    const n = { id: uid(), type: 'note', text: '', updatedAt: Date.now(), by: me, saved: false, owner: myKey, shared: false };
     notes.push(n);
     go({ type: 'note', id: n.id });
     app.querySelector('.note-editor')?.focus();
@@ -1156,16 +1193,14 @@ document.addEventListener('submit', e => {
 function updatePreview(e) {
   const form = e.target.closest('form');
   if (!form) return;
-  const finder = form.elements.finder?.value;
-  const solo = !!form.elements.solo?.checked;
+  const owner = form.dataset.owner;
+  const shared = form.elements.shared ? form.elements.shared.checked : form.dataset.shared === '1';
   const preview = form.querySelector('#split-preview');
-  if (preview) preview.innerHTML = splitPreview(finder, form.elements.earned?.value, solo);
-  // подписи под Иван/Клим и заголовок меняются вместе с «делал один»
-  for (const s of form.querySelectorAll('small[data-split]')) s.textContent = solo ? '100%' : SPLIT[s.dataset.split].label;
-  const title = form.querySelector('#finder-title');
-  if (title) title.textContent = solo ? 'Кто делал' : 'Кто нашёл заказ';
-  const hint = form.querySelector('#date-hint');
-  if (hint && e.target.name === 'date') hint.innerHTML = dateHint(e.target.value, form.dataset.id);
+  if (preview) preview.innerHTML = splitPreview(owner, form.elements.earned?.value, shared);
+  const hint = form.querySelector('#share-hint');
+  if (hint) hint.textContent = shareHint(shared);
+  const dateHintEl = form.querySelector('#date-hint');
+  if (dateHintEl && e.target.name === 'date') dateHintEl.innerHTML = dateHint(e.target.value, form.dataset.id);
 }
 document.addEventListener('input', updatePreview);
 document.addEventListener('change', updatePreview);
@@ -1188,6 +1223,17 @@ document.addEventListener('input', e => {
   scheduleNoteSave(n);
   const meta = document.getElementById('note-meta');
   if (meta) meta.textContent = [n.by, fmtAgo(n.updatedAt)].filter(Boolean).join(' · ');
+});
+
+document.addEventListener('change', e => {
+  const n = e.target.dataset?.noteShare && findNote(e.target.dataset.noteShare);
+  if (!n) return;
+  n.shared = e.target.checked;
+  n.saved = true;
+  saveNotes();
+  commitNote();
+  push({ action: 'save', order: n });
+  tick();
 });
 
 document.addEventListener('change', e => {
@@ -1237,9 +1283,12 @@ if (inTelegram) {
 
 render();
 
+// офлайн-режим: файлы приложения сохраняются на телефоне (см. sw.js)
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+
 if (remote) {
   pull();
-  window.addEventListener('online', flush);
+  window.addEventListener('online', pull);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { commitNote(); flush(); } else pull();
   });
