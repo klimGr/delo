@@ -1,8 +1,8 @@
 // Офлайн-режим: файлы приложения и фото хранятся на телефоне, чтобы «Плинтус» открывался без интернета.
 // Файлы приложения берём из сети, если она есть (так всегда свежая версия), а без сети — из кэша.
 // Фото не меняются, поэтому их сразу отдаём из кэша.
-const CACHE = 'plintus-v1';
-const APP_FILES = ['./', './index.html', './styles.css', './app.js'];
+const CACHE = 'plintus-v2';
+const APP_FILES = ['./', './index.html', './styles.css', './app.js', './manifest.json', './icon.svg'];
 const TG_SCRIPT = 'https://telegram.org/js/telegram-web-app.js';
 const NETWORK_WAIT = 2500; // сколько ждём сеть, прежде чем открыть сохранённую версию
 
