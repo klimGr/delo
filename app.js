@@ -9,7 +9,19 @@ const tgBack = tgVersion('6.1');
 /* ---------- настройки ---------- */
 // Адрес серверной функции Supabase. Пусто — демо-режим, данные только на этом устройстве.
 const API_URL = 'https://uizymjtflqoicpnifoue.supabase.co/functions/v1/api';
-const remote = !!(API_URL && inTelegram);
+
+// Приложение на экране телефона открывается без Telegram (Telegram без сети мини-приложения не запускает).
+// Там вход по личной ссылке …/delo/?t=… — её выдаёт кнопка «Установить на телефон» внутри Telegram.
+const TOKEN_KEY = 'delo.token.v1';
+const authToken = inTelegram ? null : (() => {
+  const fromUrl = new URLSearchParams(location.search).get('t');
+  try {
+    if (fromUrl) localStorage.setItem(TOKEN_KEY, fromUrl);
+    return fromUrl || localStorage.getItem(TOKEN_KEY);
+  } catch { return fromUrl; }
+})();
+const standalone = window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
+const remote = !!(API_URL && (inTelegram || authToken));
 
 /* ---------- справочники ---------- */
 const PEOPLE = { ivan: 'Иван', klim: 'Клим' };
@@ -18,7 +30,7 @@ const PEOPLE_GEN = { ivan: 'Ивана', klim: 'Клима' };
 
 // Кто я. Вне Telegram (демо-режим) — Клим.
 const ME_BY_ID = { '2069935414': 'klim', '348419449': 'ivan' };
-const myKey = ME_BY_ID[String(tg?.initDataUnsafe?.user?.id)] ?? 'klim';
+const myKey = ME_BY_ID[String(inTelegram ? tg.initDataUnsafe?.user?.id : authToken?.split('.')[0])] ?? 'klim';
 const partnerKey = myKey === 'ivan' ? 'klim' : 'ivan';
 // Заказ или заметка — личные у создателя; галочка «общий» показывает их напарнику.
 // У старых записей без хозяина хозяин — Клим.
@@ -269,7 +281,7 @@ async function api(body) {
   const res = await fetch(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...body, initData: tg.initData }),
+    body: JSON.stringify({ ...body, ...(inTelegram ? { initData: tg.initData } : { token: authToken }) }),
   });
   if (!res.ok) throw Object.assign(new Error('api'), { status: res.status });
   return res.json();
@@ -460,7 +472,6 @@ const state = {
 };
 const app = document.getElementById('app');
 const tabbar = document.getElementById('tabbar');
-let homeStatus = null; // ответ Telegram: можно ли добавить иконку на экран
 
 function go(screen) {
   state.stack.push(screen);
@@ -654,7 +665,10 @@ function renderHome() {
   const a = totals(all);
   const upcoming = plannedOrders();
   const [first, ...rest] = upcoming;
-  const offerHome = homeStatus === 'missed' && !readJSON(HOME_KEY);
+  // в Telegram — предложить приложение на экран; в браузере по личной ссылке — подсказать, как его поставить
+  const offerInstall = inTelegram && remote && !readJSON(HOME_KEY);
+  const howToInstall = authToken && !standalone;
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
 
   return `
     <header class="hero row">
@@ -691,12 +705,20 @@ function renderHome() {
       <div class="card-foot">Плинтус и молдинг</div>
     </button>
 
-    ${offerHome ? `
+    ${offerInstall ? `
       <div class="card promo">
         <div class="promo-icon">${APP_ICON}</div>
-        <div class="promo-text"><b>Иконка на экран телефона</b><span>Открывать «Плинтус» одним касанием</span></div>
-        <button class="chip solid" data-action="add-home">Добавить</button>
+        <div class="promo-text"><b>Приложение на экран телефона</b><span>Открывается одним касанием и без интернета</span></div>
+        <button class="chip solid" data-action="install-web">Установить</button>
         <button class="promo-x" data-action="hide-home" aria-label="Скрыть">${ICON.close}</button>
+      </div>` : ''}
+    ${howToInstall ? `
+      <div class="card install-help">
+        <b>Последний шаг — поставить на экран «Домой»</b>
+        <p>${ios
+          ? 'Нажми «Поделиться» внизу Safari (квадрат со стрелкой) → «На экран „Домой“» → «Добавить».'
+          : 'Открой меню браузера (⋮ справа вверху) → «Добавить на главный экран» или «Установить приложение».'}</p>
+        <p>После этого открывай «Плинтус» с иконки — он работает и в авиарежиме.</p>
       </div>` : ''}`;
 }
 
@@ -1115,8 +1137,11 @@ function handleAction(action, id, data) {
     tick();
     return render();
   }
-  if (action === 'add-home') {
-    try { tg.addToHomeScreen(); } catch { /* старый клиент */ }
+  if (action === 'install-web') {
+    // личная ссылка открывается в обычном браузере телефона, оттуда приложение ставится на экран
+    api({ action: 'token' })
+      .then(({ token }) => openLink(`${location.origin}${location.pathname}?t=${encodeURIComponent(token)}`))
+      .catch(syncError);
     return;
   }
   if (action === 'hide-home') {
@@ -1268,17 +1293,6 @@ if (inTelegram) {
   }
   // чтобы свайп вниз по списку не закрывал приложение
   if (tgVersion('7.7')) tg.disableVerticalSwipes();
-  if (tgVersion('8.0')) {
-    tg.checkHomeScreenStatus(status => {
-      homeStatus = status;
-      if (state.tab === 'home' && !state.stack.length) render();
-    });
-    tg.onEvent('homeScreenAdded', () => {
-      homeStatus = 'added';
-      haptic('success');
-      render();
-    });
-  }
 }
 
 render();
